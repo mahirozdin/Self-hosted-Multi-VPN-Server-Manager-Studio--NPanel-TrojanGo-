@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Npanel Manager</title>
+    <link rel="stylesheet" href="css/style.css">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/remixicon@3.5.0/fonts/remixicon.css" rel="stylesheet">
+    <link rel="stylesheet" href="/node_modules/xterm/css/xterm.css" />
+</head>
+<body>
+    <div class="app-container">
+        <header>
+            <h1>Npanel Manager</h1>
+            <button id="logoutBtn" class="btn btn-secondary">Logout</button>
+        </header>
+        
+        <main>
+            <div class="actions-bar">
+                <div class="actions-left">
+                    <button id="addServerBtn" class="btn btn-primary">+ Add Server</button>
+                    <button id="installServerBtn" class="btn btn-accent">+ Install New</button>
+                    <button id="bulkRebootBtn" class="btn btn-warning" style="display:none;">Reboot Selected (<span id="selectedCount">0</span>)</button>
+                </div>
+                <div class="actions-right">
+                     <input type="text" id="searchInput" placeholder="Search servers...">
+                     <button id="refreshAllBtn" class="btn btn-secondary">Refresh All</button>
+                </div>
+            </div>
+
+            <div class="table-container">
+                <table class="server-table">
+                    <thead>
+                        <tr>
+                            <th style="width: 40px; text-align: center;"><input type="checkbox" id="selectAllCheckbox" onclick="toggleSelectAll()"></th>
+                            <th onclick="sortServers('name')" style="cursor:pointer">Status/Name ↕</th>
+                            <th onclick="sortServers('ip')" style="cursor:pointer">IP / Domain ↕</th>
+                            <th onclick="sortServers('latency')" style="cursor:pointer">VPN Latency ↕</th>
+                            <th onclick="sortServers('ssh_status')" style="cursor:pointer">SSH Status ↕</th>
+                            <th onclick="sortServers('ssl_expiry')" style="cursor:pointer">SSL Expiry ↕</th>
+                            <th onclick="sortServers('trojan_latency')" style="cursor:pointer">Trojan ↕</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody id="serverList">
+                        <!-- Server rows will be injected here -->
+                    </tbody>
+                </table>
+                 <div id="loadingIndicator" class="loading">Loading servers...</div>
+            </div>
+        </main>
+    </div>
+
+    <!-- Terminal Modal -->
+    <div id="terminalModal" class="modal">
+        <div class="modal-content terminal-content">
+            <span class="close">&times;</span>
+            <h2 id="terminalTitle">Terminal</h2>
+            <div id="terminal-container"></div>
+        </div>
+    </div>
+
+    <!-- Add Server Modal -->
+    <div id="addServerModal" class="modal">
+        <div class="modal-content">
+            <span class="close">&times;</span>
+            <h2>Add Existing Server</h2>
+            <form id="addServerForm">
+                <input type="text" name="name" placeholder="Server Name" required>
+                <input type="text" name="ip" placeholder="IP Address" required>
+                <div style="display:flex; gap:10px;">
+                    <input type="number" name="port" placeholder="SSH Port (22)" value="22">
+                    <input type="number" name="vpn_port" placeholder="VPN Port (443)" value="443">
+                </div>
+                <input type="text" name="username" placeholder="SSH User (root)" value="root">
+                <input type="password" name="password" placeholder="SSH Password" required>
+                <input type="text" name="domain" placeholder="Domain" required>
+                <button type="submit" class="btn btn-primary">Add Server</button>
+            </form>
+        </div>
+    </div>
+
+    <!-- Install Server Modal -->
+    <div id="installServerModal" class="modal">
+        <div class="modal-content">
+            <span class="close">&times;</span>
+            <h2>Install New Server</h2>
+            <form id="installServerForm">
+                <input type="text" name="name" placeholder="Server Name" required>
+                <input type="text" name="ip" placeholder="IP Address" required>
+                <div style="display:flex; gap:10px;">
+                    <input type="number" name="port" placeholder="SSH Port (22)" value="22">
+                    <input type="number" name="vpn_port" placeholder="VPN Port (443)" value="443">
+                </div>
+                <input type="text" name="username" placeholder="SSH User (root)" value="root">
+                <input type="password" name="password" placeholder="SSH Password" required>
+                <input type="text" name="domain" placeholder="Domain" required>
+                <div class="break"></div>
+                <h3>Npanel Config</h3>
+                <input type="text" name="adminUser" placeholder="Admin User" value="Admin">
+                <input type="text" name="adminPass" placeholder="Admin Password" value="ChangeMe123!">
+                <button type="submit" class="btn btn-accent">Start Installation</button>
+            </form>
+        </div>
+    </div>
+
+    <!-- Edit Server Modal -->
+    <div id="editServerModal" class="modal">
+        <div class="modal-content">
+            <span class="close">&times;</span>
+            <h2>Edit Server</h2>
+            <form id="editServerForm">
+                <input type="text" name="name" placeholder="Server Name" required>
+                <input type="text" name="ip" placeholder="IP Address" required>
+                <div style="display:flex; gap:10px;">
+                    <input type="number" name="port" placeholder="SSH Port (22)" value="22">
+                    <input type="number" name="vpn_port" placeholder="VPN Port (443)" value="443">
+                </div>
+                <input type="text" name="username" placeholder="SSH User (root)" value="root">
+                <input type="password" name="password" placeholder="SSH Password (leave blank to keep)" >
+                <input type="text" name="domain" placeholder="Domain" required>
+                <textarea name="trojan_config" placeholder="Trojan Config (URL or JSON)" style="width:100%; height:80px; background:#0f172a; border:1px solid #334155; color:white; border-radius:8px; padding:0.8rem; box-sizing:border-box; margin-bottom:1rem; font-family:monospace;"></textarea>
+                <button type="submit" class="btn btn-primary">Save Changes</button>
+            </form>
+        </div>
+    </div>
+
+    <script src="/node_modules/socket.io/client-dist/socket.io.min.js"></script>
+    <script src="/node_modules/xterm/lib/xterm.js"></script>
+    <script src="/node_modules/xterm-addon-fit/lib/xterm-addon-fit.js"></script>
+    <script src="js/app.js"></script>
+</body>
+</html>

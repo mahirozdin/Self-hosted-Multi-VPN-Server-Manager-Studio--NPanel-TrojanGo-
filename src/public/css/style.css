@@ -1,0 +1,266 @@
+:root {
+    --bg-color: #0f172a;
+    --card-bg: #1e293b;
+    --text-primary: #f8fafc;
+    --text-secondary: #94a3b8;
+    --primary-color: #3b82f6;
+    --primary-hover: #2563eb;
+    --accent-color: #10b981;
+    --danger-color: #ef4444;
+    --warning-color: #f59e0b;
+}
+
+body {
+    background-color: var(--bg-color);
+    color: var(--text-primary);
+    font-family: 'Inter', sans-serif;
+    margin: 0;
+    padding: 0;
+}
+
+.app-container {
+    max-width: 1200px;
+    margin: 0 auto;
+    padding: 2rem;
+}
+
+header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 3rem;
+    border-bottom: 1px solid var(--card-bg);
+    padding-bottom: 1rem;
+}
+
+h1 { font-weight: 700; color: var(--text-primary); }
+h2 { color: var(--text-primary); margin-top: 0; }
+h3 { color: var(--text-secondary); font-size: 0.9rem; text-transform: uppercase; margin-top: 1.5rem; }
+
+.btn {
+    padding: 0.75rem 1.5rem;
+    border: none;
+    border-radius: 8px;
+    cursor: pointer;
+    font-weight: 600;
+    transition: all 0.2s;
+    font-size: 0.9rem;
+}
+
+.btn-primary { background: var(--primary-color); color: white; }
+.btn-primary:hover { background: var(--primary-hover); }
+.btn-secondary { background: var(--card-bg); color: var(--text-secondary); }
+.btn-secondary:hover { background: #334155; color: white; }
+.btn-accent { background: var(--accent-color); color: white; }
+.btn-danger { background: var(--danger-color); color: white; }
+.btn-small { padding: 0.4rem 0.8rem; font-size: 0.8rem; }
+
+.actions-bar {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 2rem;
+    gap: 1rem;
+    flex-wrap: wrap;
+}
+
+.actions-left, .actions-right {
+    display: flex;
+    gap: 1rem;
+    align-items: center;
+}
+
+/* Table Styles */
+.table-container {
+    overflow-x: auto;
+    background: var(--card-bg);
+    border-radius: 12px;
+    border: 1px solid #334155;
+    padding: 1rem;
+}
+
+.server-table {
+    width: 100%;
+    border-collapse: collapse;
+    color: var(--text-primary);
+}
+
+.server-table th {
+    text-align: center; /* Center align header text */
+    padding: 1rem;
+    border-bottom: 2px solid #334155;
+    color: var(--text-secondary);
+    font-weight: 600;
+    font-size: 0.9rem;
+    text-transform: uppercase;
+    white-space: nowrap; /* Prevent wrapping */
+}
+
+/* Align first column (checkbox) center */
+.server-table th:first-child, 
+.server-table td:first-child {
+    text-align: center;
+}
+
+/* Align second column (Name) left */
+.server-table th:nth-child(2), 
+.server-table td:nth-child(2) {
+    text-align: left;
+}
+
+.server-table td {
+    padding: 1rem;
+    border-bottom: 1px solid #334155;
+    vertical-align: middle;
+    font-size: 0.95rem;
+    text-align: center; /* Center align data by default */
+}
+
+/* Exception for Name and IP/Domain columns to be left-aligned?? 
+   Actually user said "headers not centered", implies data might be centered or user wants headers centered.
+   Usually numbers/status are centered, text is left.
+   Let's Center Headers as requested.
+*/
+
+.cell-actions {
+    display: flex;
+    gap: 0.5rem;
+    justify-content: center; /* Center actions */
+    align-items: center;
+}
+
+.btn-icon {
+    background: transparent;
+    border: none;
+    color: var(--text-secondary);
+    cursor: pointer;
+    font-size: 1.2rem;
+    padding: 0.4rem;
+    border-radius: 4px;
+    transition: all 0.2s;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.btn-icon:hover {
+    color: white;
+    background-color: rgba(255,255,255,0.1);
+}
+
+.btn-icon.warn { color: var(--warning-color); }
+.btn-icon.warn:hover { color: #fff; background-color: var(--warning-color); }
+
+.btn-icon.danger { color: var(--danger-color); }
+.btn-icon.danger:hover { color: #fff; background-color: var(--danger-color); }
+
+.status-indicator {
+    display: inline-block;
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    margin-right: 0.5rem;
+}
+
+.status-online { background: var(--accent-color); box-shadow: 0 0 10px var(--accent-color); }
+.status-error { background: var(--danger-color); box-shadow: 0 0 10px var(--danger-color); }
+.status-installing { background: var(--warning-color); animation: pulse 1s infinite; }
+
+@keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.5; } 100% { opacity: 1; } }
+
+.metric-value.danger { color: var(--danger-color); font-weight: 700; }
+.text-secondary { color: var(--text-secondary); font-size: 0.85rem; display: block; margin-top: 0.2rem; }
+
+/* Modals */
+.modal {
+    display: none;
+    position: fixed;
+    z-index: 100;
+    left: 0;
+    top: 0;
+    width: 100%;
+    height: 100%;
+    background-color: rgba(0,0,0,0.7);
+    backdrop-filter: blur(5px);
+}
+
+.modal-content {
+    background-color: var(--card-bg);
+    margin: 10% auto;
+    padding: 2rem;
+    border-radius: 12px;
+    width: 100%;
+    max-width: 500px;
+    border: 1px solid #334155;
+}
+
+.terminal-content {
+    max-width: 900px;
+    height: 600px;
+    display: flex;
+    flex-direction: column;
+}
+
+#terminal-container {
+    flex-grow: 1;
+    background: black;
+    padding: 5px;
+}
+
+.close {
+    color: var(--text-secondary);
+    float: right;
+    font-size: 28px;
+    font-weight: bold;
+    cursor: pointer;
+}
+
+.close:hover { color: white; }
+
+input {
+    background: #0f172a;
+    border: 1px solid #334155;
+    color: white;
+    padding: 0.8rem;
+    border-radius: 8px;
+    width: 100%;
+    box-sizing: border-box;
+    margin-bottom: 1rem;
+    font-family: inherit;
+}
+
+input#searchInput {
+    margin-bottom: 0;
+    width: 250px;
+    padding: 0.6rem 1rem;
+    border-radius: 20px;
+    background: #1e293b;
+    border: 1px solid #475569;
+    color: #e2e8f0;
+}
+
+input:focus {
+    outline: none;
+    border-color: var(--primary-color);
+}
+
+.error-text { color: var(--danger-color); }
+
+
+/* Checkbox */
+input[type="checkbox"] {
+    width: 18px;
+    height: 18px;
+    margin: 0;
+    cursor: pointer;
+    accent-color: var(--primary-color);
+}
+
+.btn-warning {
+    background-color: var(--warning-color);
+    color: #1e293b;
+}
+
+.btn-warning:hover {
+    background-color: #d97706;
+}

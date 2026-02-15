@@ -1,0 +1,35 @@
+{
+  "name": "npanel-manager-studio",
+  "version": "1.0.0",
+  "description": "A web-based management system for automating Npanel VPN server installations and monitoring.",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js"
+  },
+  "keywords": [
+    "npanel",
+    "vpn-manager",
+    "trojan-go",
+    "server-automation",
+    "ssh-management"
+  ],
+  "author": "Mahir Taha Özdin",
+  "license": "MIT",
+  "dependencies": {
+    "body-parser": "^2.2.2",
+    "cors": "^2.8.6",
+    "dotenv": "^17.3.1",
+    "express": "^5.2.1",
+    "node-cron": "^4.2.1",
+    "sequelize": "^6.37.7",
+    "socket.io": "^4.8.3",
+    "socket.io-client": "^4.8.3",
+    "sqlite3": "^5.1.7",
+    "ssh2": "^1.17.0",
+    "tcp-ping": "^0.1.1",
+    "xterm": "^5.3.0",
+    "xterm-addon-fit": "^0.8.0",
+    "yargs": "^18.0.0"
+  },
+  "type": "commonjs"
+}
