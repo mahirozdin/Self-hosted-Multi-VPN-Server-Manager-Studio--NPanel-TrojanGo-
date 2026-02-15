@@ -2,7 +2,7 @@
 
 **Self-Hosted Automated VPN Server Provisioning, SSH Management, and Real-time Monitoring Dashboard**
 
-![GitHub License](https://img.shields.io/github/license/mahirozdin/Self-hosted-Multi-VPN-Server-Manager-Studio--NPanel-TrojanGo-)
+![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
 ![Node Version](https://img.shields.io/badge/node-%3E%3D16.0.0-brightgreen)
 ![VPN](https://img.shields.io/badge/VPN-Trojan--Go-blueviolet)
 
