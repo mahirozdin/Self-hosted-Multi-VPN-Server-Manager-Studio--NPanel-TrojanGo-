@@ -2,7 +2,7 @@
 
 **Self-Hosted Automated VPN Server Provisioning, SSH Management, and Real-time Monitoring Dashboard**
 
-![GitHub License](https://img.shields.io/github/license/mahirozdin/npanel-manager-studio)
+![GitHub License](https://img.shields.io/github/license/mahirozdin/Self-hosted-Multi-VPN-Server-Manager-Studio--NPanel-TrojanGo-)
 ![Node Version](https://img.shields.io/badge/node-%3E%3D16.0.0-brightgreen)
 ![VPN](https://img.shields.io/badge/VPN-Trojan--Go-blueviolet)
 
@@ -49,8 +49,8 @@ Whether you are managing a single personal server or a fleet of global nodes, th
 
 ### 1. Clone & Install
 ```bash
-git clone https://github.com/mahirozdin/npanel-manager-studio.git
-cd npanel-manager-studio
+git clone https://github.com/mahirozdin/Self-hosted-Multi-VPN-Server-Manager-Studio--NPanel-TrojanGo-.git
+cd Self-hosted-Multi-VPN-Server-Manager-Studio--NPanel-TrojanGo-
 npm install
 ```
 
@@ -95,7 +95,7 @@ We welcome contributions! This project is built for the community and we encoura
 5. **Open** a Pull Request
 
 ### Reporting Issues
-- **Bug Reports**: Open an [Issue](https://github.com/mahirozdin/npanel-manager-studio/issues) with detailed steps to reproduce
+- **Bug Reports**: Open an [Issue](https://github.com/mahirozdin/Self-hosted-Multi-VPN-Server-Manager-Studio--NPanel-TrojanGo-/issues) with detailed steps to reproduce
 - **Feature Requests**: We're open to new ideas! Share your suggestions via Issues
 - **Security Issues**: Please report security vulnerabilities privately
 
