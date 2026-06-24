@@ -3,132 +3,250 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Npanel Manager</title>
+    <title>NPanel Manager</title>
     <link rel="stylesheet" href="css/style.css">
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
     <link href="https://cdn.jsdelivr.net/npm/remixicon@3.5.0/fonts/remixicon.css" rel="stylesheet">
-    <link rel="stylesheet" href="/node_modules/xterm/css/xterm.css" />
+    <link rel="stylesheet" href="/vendor/xterm.css" />
 </head>
 <body>
-    <div class="app-container">
-        <header>
-            <h1>Npanel Manager</h1>
-            <button id="logoutBtn" class="btn btn-secondary">Logout</button>
+    <div class="shell">
+        <header class="topbar">
+            <div class="brand"><i class="ri-shield-keyhole-line"></i> NPanel Manager</div>
+            <nav class="nav">
+                <button class="nav-tab active" data-page="servers"><i class="ri-server-line"></i> Servers</button>
+                <button class="nav-tab" data-page="vpn"><i class="ri-global-line"></i> VPN list</button>
+                <button class="nav-tab" data-page="apps"><i class="ri-apps-2-line"></i> Apps</button>
+                <button class="nav-tab" data-page="logs"><i class="ri-file-list-3-line"></i> Logs</button>
+            </nav>
+            <div class="topbar-actions">
+                <button id="logoutBtn" class="btn btn-ghost"><i class="ri-logout-box-r-line"></i></button>
+            </div>
         </header>
-        
-        <main>
-            <div class="actions-bar">
-                <div class="actions-left">
-                    <button id="addServerBtn" class="btn btn-primary">+ Add Server</button>
-                    <button id="installServerBtn" class="btn btn-accent">+ Install New</button>
-                    <button id="bulkRebootBtn" class="btn btn-warning" style="display:none;">Reboot Selected (<span id="selectedCount">0</span>)</button>
-                </div>
-                <div class="actions-right">
-                     <input type="text" id="searchInput" placeholder="Search servers...">
-                     <button id="refreshAllBtn" class="btn btn-secondary">Refresh All</button>
-                </div>
-            </div>
 
-            <div class="table-container">
-                <table class="server-table">
-                    <thead>
-                        <tr>
-                            <th style="width: 40px; text-align: center;"><input type="checkbox" id="selectAllCheckbox" onclick="toggleSelectAll()"></th>
-                            <th onclick="sortServers('name')" style="cursor:pointer">Status/Name ↕</th>
-                            <th onclick="sortServers('ip')" style="cursor:pointer">IP / Domain ↕</th>
-                            <th onclick="sortServers('latency')" style="cursor:pointer">VPN Latency ↕</th>
-                            <th onclick="sortServers('ssh_status')" style="cursor:pointer">SSH Status ↕</th>
-                            <th onclick="sortServers('ssl_expiry')" style="cursor:pointer">SSL Expiry ↕</th>
-                            <th onclick="sortServers('trojan_latency')" style="cursor:pointer">Trojan ↕</th>
-                            <th>Actions</th>
-                        </tr>
-                    </thead>
-                    <tbody id="serverList">
-                        <!-- Server rows will be injected here -->
-                    </tbody>
-                </table>
-                 <div id="loadingIndicator" class="loading">Loading servers...</div>
+        <!-- ===== SERVERS ===== -->
+        <section id="page-servers" class="page active">
+            <div class="page-head">
+                <div>
+                    <h2>Servers</h2>
+                    <p>VPS host'ları — durum, kurulum, sertifika, kullanıcılar</p>
+                </div>
+                <div class="toolbar">
+                    <div class="search"><i class="ri-search-line"></i><input type="text" id="serverSearch" placeholder="Ara"></div>
+                    <button id="refreshAllBtn" class="btn btn-secondary"><i class="ri-refresh-line"></i> Yenile</button>
+                    <button id="addServerBtn" class="btn btn-secondary"><i class="ri-add-line"></i> Ekle</button>
+                    <button id="installServerBtn" class="btn btn-primary"><i class="ri-flashlight-line"></i> Kur</button>
+                </div>
             </div>
-        </main>
+            <div class="metrics">
+                <div class="metric"><span>Toplam host</span><strong id="mServers">0</strong></div>
+                <div class="metric ok"><span>Online</span><strong id="mOnline">0</strong></div>
+                <div class="metric err"><span>Hata</span><strong id="mError">0</strong></div>
+                <div class="metric warn"><span>Aktif kurulum</span><strong id="mJobs">0</strong></div>
+            </div>
+            <div id="serverList"></div>
+        </section>
+
+        <!-- ===== VPN LIST ===== -->
+        <section id="page-vpn" class="page">
+            <div class="page-head">
+                <div>
+                    <h2>VPN list</h2>
+                    <p>Uygulamalara giden katalog — ülkeler ve config'ler</p>
+                </div>
+                <div class="toolbar">
+                    <button id="addCountryBtn" class="btn btn-secondary"><i class="ri-flag-line"></i> Ülke ekle</button>
+                    <button id="addConfigBtn" class="btn btn-primary"><i class="ri-add-line"></i> Config ekle</button>
+                </div>
+            </div>
+            <div class="metrics">
+                <div class="metric"><span>Ülke</span><strong id="mCountries">0</strong></div>
+                <div class="metric ok"><span>Yayında config</span><strong id="mActive">0</strong></div>
+                <div class="metric"><span>Toplam config</span><strong id="mConfigs">0</strong></div>
+            </div>
+            <div id="countryList"></div>
+        </section>
+
+        <!-- ===== APPS ===== -->
+        <section id="page-apps" class="page">
+            <div class="page-head">
+                <div>
+                    <h2>Apps</h2>
+                    <p>Mobil uygulamalar (tenant) — token ve katalog erişimi</p>
+                </div>
+                <div class="toolbar">
+                    <button id="newAppBtn" class="btn btn-primary"><i class="ri-add-line"></i> Uygulama ekle</button>
+                </div>
+            </div>
+            <div id="appsList"></div>
+            <div id="appCatalogPanel"></div>
+        </section>
+
+        <!-- ===== LOGS ===== -->
+        <section id="page-logs" class="page">
+            <div class="page-head">
+                <div>
+                    <h2>Logs</h2>
+                    <p>Bağlantı kayıtları (mahkeme/denetim) ve cihazlar</p>
+                </div>
+            </div>
+            <div class="inner-tabs">
+                <button class="inner-tab active" data-logtab="logs">Bağlantı logları</button>
+                <button class="inner-tab" data-logtab="devices">Cihazlar</button>
+                <button class="inner-tab" data-logtab="bans">Yasaklar</button>
+            </div>
+            <div id="logsTab">
+                <form id="logsFilterForm" class="filter-row">
+                    <input type="text" name="firebaseUid" placeholder="Firebase UID">
+                    <input type="text" name="ip" placeholder="Client IP">
+                    <input type="text" name="deviceId" placeholder="Device ID">
+                    <input type="date" name="from">
+                    <input type="date" name="to">
+                    <button type="submit" class="btn btn-primary"><i class="ri-search-line"></i> Ara</button>
+                </form>
+                <div id="logsResults"></div>
+            </div>
+            <div id="devicesTab" style="display:none">
+                <form id="devicesFilterForm" class="filter-row">
+                    <input type="text" name="q" placeholder="device id veya firebase uid">
+                    <button type="submit" class="btn btn-primary"><i class="ri-search-line"></i> Ara</button>
+                </form>
+                <div id="devicesResults"></div>
+            </div>
+            <div id="bansTab" style="display:none">
+                <form id="banForm" class="filter-row">
+                    <select name="type">
+                        <option value="ip">IP</option>
+                        <option value="device_id">Device ID</option>
+                        <option value="firebase_uid">Firebase UID</option>
+                    </select>
+                    <input type="text" name="value" placeholder="Değer (IP / device id / uid)" required>
+                    <input type="text" name="reason" placeholder="Sebep (opsiyonel)">
+                    <button type="submit" class="btn btn-primary"><i class="ri-forbid-line"></i> Banla</button>
+                </form>
+                <div id="bansResults"></div>
+            </div>
+        </section>
     </div>
 
-    <!-- Terminal Modal -->
+    <!-- ===== Modals ===== -->
     <div id="terminalModal" class="modal">
         <div class="modal-content terminal-content">
-            <span class="close">&times;</span>
+            <button class="close icon-btn"><i class="ri-close-line"></i></button>
             <h2 id="terminalTitle">Terminal</h2>
             <div id="terminal-container"></div>
         </div>
     </div>
 
-    <!-- Add Server Modal -->
     <div id="addServerModal" class="modal">
         <div class="modal-content">
-            <span class="close">&times;</span>
-            <h2>Add Existing Server</h2>
-            <form id="addServerForm">
-                <input type="text" name="name" placeholder="Server Name" required>
-                <input type="text" name="ip" placeholder="IP Address" required>
-                <div style="display:flex; gap:10px;">
-                    <input type="number" name="port" placeholder="SSH Port (22)" value="22">
-                    <input type="number" name="vpn_port" placeholder="VPN Port (443)" value="443">
-                </div>
-                <input type="text" name="username" placeholder="SSH User (root)" value="root">
-                <input type="password" name="password" placeholder="SSH Password" required>
-                <input type="text" name="domain" placeholder="Domain" required>
-                <button type="submit" class="btn btn-primary">Add Server</button>
+            <button class="close icon-btn"><i class="ri-close-line"></i></button>
+            <h2>Mevcut sunucu ekle</h2>
+            <form id="addServerForm" class="form-grid">
+                <input type="text" name="name" placeholder="Sunucu adı" required>
+                <input type="text" name="ip" placeholder="IP adresi" required>
+                <input type="number" name="port" placeholder="SSH portu" value="22">
+                <input type="number" name="vpn_port" placeholder="VPN portu" value="443">
+                <input type="text" name="username" placeholder="SSH kullanıcı" value="root">
+                <input type="password" name="password" placeholder="SSH şifre" required>
+                <input type="text" name="domain" placeholder="Domain" required class="full-span">
+                <input type="text" name="trojan_config" placeholder="Opsiyonel Trojan config" class="full-span">
+                <button type="submit" class="btn btn-primary full-span">Sunucu ekle</button>
             </form>
         </div>
     </div>
 
-    <!-- Install Server Modal -->
     <div id="installServerModal" class="modal">
         <div class="modal-content">
-            <span class="close">&times;</span>
-            <h2>Install New Server</h2>
-            <form id="installServerForm">
-                <input type="text" name="name" placeholder="Server Name" required>
-                <input type="text" name="ip" placeholder="IP Address" required>
-                <div style="display:flex; gap:10px;">
-                    <input type="number" name="port" placeholder="SSH Port (22)" value="22">
-                    <input type="number" name="vpn_port" placeholder="VPN Port (443)" value="443">
-                </div>
-                <input type="text" name="username" placeholder="SSH User (root)" value="root">
-                <input type="password" name="password" placeholder="SSH Password" required>
-                <input type="text" name="domain" placeholder="Domain" required>
-                <div class="break"></div>
-                <h3>Npanel Config</h3>
-                <input type="text" name="adminUser" placeholder="Admin User" value="Admin">
-                <input type="text" name="adminPass" placeholder="Admin Password" value="ChangeMe123!">
-                <button type="submit" class="btn btn-accent">Start Installation</button>
+            <button class="close icon-btn"><i class="ri-close-line"></i></button>
+            <h2>Yeni sunucu kur</h2>
+            <form id="installServerForm" class="form-grid">
+                <input type="text" name="name" placeholder="Sunucu adı" required>
+                <input type="text" name="ip" placeholder="IP adresi" required>
+                <input type="number" name="port" placeholder="SSH portu" value="22">
+                <input type="number" name="vpn_port" placeholder="VPN portu" value="443">
+                <input type="text" name="username" placeholder="SSH kullanıcı" value="root">
+                <input type="password" name="password" placeholder="SSH şifre" required>
+                <input type="text" name="domain" placeholder="Domain" required class="full-span">
+                <input type="text" name="adminUser" placeholder="Panel kullanıcı" value="Admin">
+                <input type="password" name="adminPass" placeholder="Panel şifre" value="ChangeMe123!">
+                <button type="submit" class="btn btn-primary full-span">Kurulumu başlat</button>
             </form>
         </div>
     </div>
 
-    <!-- Edit Server Modal -->
     <div id="editServerModal" class="modal">
         <div class="modal-content">
-            <span class="close">&times;</span>
-            <h2>Edit Server</h2>
-            <form id="editServerForm">
-                <input type="text" name="name" placeholder="Server Name" required>
-                <input type="text" name="ip" placeholder="IP Address" required>
-                <div style="display:flex; gap:10px;">
-                    <input type="number" name="port" placeholder="SSH Port (22)" value="22">
-                    <input type="number" name="vpn_port" placeholder="VPN Port (443)" value="443">
-                </div>
-                <input type="text" name="username" placeholder="SSH User (root)" value="root">
-                <input type="password" name="password" placeholder="SSH Password (leave blank to keep)" >
-                <input type="text" name="domain" placeholder="Domain" required>
-                <textarea name="trojan_config" placeholder="Trojan Config (URL or JSON)" style="width:100%; height:80px; background:#0f172a; border:1px solid #334155; color:white; border-radius:8px; padding:0.8rem; box-sizing:border-box; margin-bottom:1rem; font-family:monospace;"></textarea>
-                <button type="submit" class="btn btn-primary">Save Changes</button>
+            <button class="close icon-btn"><i class="ri-close-line"></i></button>
+            <h2>Sunucuyu düzenle</h2>
+            <form id="editServerForm" class="form-grid">
+                <input type="text" name="name" placeholder="Sunucu adı" required>
+                <input type="text" name="ip" placeholder="IP adresi" required>
+                <input type="number" name="port" placeholder="SSH portu" value="22">
+                <input type="number" name="vpn_port" placeholder="VPN portu" value="443">
+                <input type="text" name="username" placeholder="SSH kullanıcı" value="root">
+                <input type="password" name="password" placeholder="Yeni SSH şifre (boş = değişmez)">
+                <input type="text" name="domain" placeholder="Domain" required class="full-span">
+                <textarea name="trojan_config" placeholder="Trojan config" class="full-span"></textarea>
+                <button type="submit" class="btn btn-primary full-span">Kaydet</button>
             </form>
         </div>
     </div>
 
-    <script src="/node_modules/socket.io/client-dist/socket.io.min.js"></script>
-    <script src="/node_modules/xterm/lib/xterm.js"></script>
-    <script src="/node_modules/xterm-addon-fit/lib/xterm-addon-fit.js"></script>
+    <div id="countryModal" class="modal">
+        <div class="modal-content">
+            <button class="close icon-btn"><i class="ri-close-line"></i></button>
+            <h2>Ülke ekle</h2>
+            <form id="countryForm" class="form-grid">
+                <input type="text" name="name" placeholder="Ülke adı" required>
+                <input type="text" name="code" id="countryCodeInput" placeholder="ISO kod (örn AR)" maxlength="4">
+                <input type="hidden" name="flag" id="countryFlagInput">
+                <div class="full-span" style="display:flex;align-items:center;gap:10px;">
+                    <img id="countryFlagPreview" class="flag" alt="">
+                    <span class="hint">Bayrak, ISO koddan otomatik (flagcdn)</span>
+                </div>
+                <button type="submit" class="btn btn-primary full-span">Ülke oluştur</button>
+            </form>
+        </div>
+    </div>
+
+    <div id="configModal" class="modal">
+        <div class="modal-content">
+            <button class="close icon-btn"><i class="ri-close-line"></i></button>
+            <h2>Config ekle</h2>
+            <form id="configForm" class="form-grid">
+                <select name="country_id" id="configCountry" required></select>
+                <select name="type" id="configType"><option value="free">free</option><option value="premium">premium</option></select>
+                <select name="server_id" id="configServer" required class="full-span"></select>
+                <select name="npanel_user_id" id="configUser" required class="full-span"></select>
+                <input type="text" name="display_name" placeholder="Görünen ad (opsiyonel)" class="full-span">
+                <textarea name="config" class="full-span" placeholder="Trojan config URI — node'da oluşturulmuş ÇALIŞAN config'i yapıştırın (boş = sunucu kullanıcısından üretilir, gerçek kullanıcıda bağlanmaz): trojan://sifre@host:443?security=tls&type=ws&path=/fetch#Ad"></textarea>
+                <input type="text" name="entry_ip" placeholder="Giriş IP override (opsiyonel, boş = sunucu IP)">
+                <input type="text" name="sni" placeholder="SNI override (opsiyonel)">
+                <button type="submit" class="btn btn-primary full-span">Katalog'a ekle</button>
+            </form>
+        </div>
+    </div>
+
+    <div id="appModal" class="modal">
+        <div class="modal-content">
+            <button class="close icon-btn"><i class="ri-close-line"></i></button>
+            <h2>Uygulama ekle</h2>
+            <form id="appForm" class="form-grid">
+                <input type="text" name="name" placeholder="Uygulama adı" required>
+                <input type="text" name="slug" placeholder="slug (örn vpn-argentina)" required>
+                <input type="text" name="ios_bundle_id" placeholder="iOS bundle id">
+                <input type="text" name="apple_team_id" placeholder="Apple Team ID">
+                <input type="text" name="android_package_name" placeholder="Android package">
+                <input type="text" name="min_supported_version" placeholder="Min sürüm (örn 2.3.0)">
+                <button type="submit" class="btn btn-primary full-span">Oluştur</button>
+            </form>
+        </div>
+    </div>
+
+    <script src="/vendor/socket.io.min.js"></script>
+    <script src="/vendor/xterm.js"></script>
+    <script src="/vendor/xterm-addon-fit.js"></script>
     <script src="js/app.js"></script>
 </body>
 </html>

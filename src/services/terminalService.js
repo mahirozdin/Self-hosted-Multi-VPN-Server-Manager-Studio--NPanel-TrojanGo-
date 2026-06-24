@@ -1,7 +1,15 @@
 const { Client } = require('ssh2');
 const { Server } = require('../models/Database');
+const { verifyAdminToken } = require('./authService');
 
 module.exports = function(io) {
+    // Authenticate every socket as an admin before any SSH session can start.
+    io.use((socket, next) => {
+        const token = socket.handshake.auth?.token;
+        if (verifyAdminToken(token)) return next();
+        next(new Error('unauthorized'));
+    });
+
     io.on('connection', (socket) => {
         let conn = null;
         let stream = null;

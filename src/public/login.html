@@ -14,9 +14,10 @@
             height: 100vh;
         }
         .login-card {
-            background: var(--card-bg);
+            background: var(--panel);
+            border: 1px solid var(--line);
             padding: 2rem;
-            border-radius: 12px;
+            border-radius: 8px;
             width: 100%;
             max-width: 400px;
             text-align: center;
@@ -44,8 +45,8 @@
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ password })
             });
-            const data = await res.json();
-            if (data.success) {
+            const data = await res.json().catch(() => ({}));
+            if (res.ok && data.success) {
                 localStorage.setItem('token', data.token);
                 window.location.href = '/';
             } else {
