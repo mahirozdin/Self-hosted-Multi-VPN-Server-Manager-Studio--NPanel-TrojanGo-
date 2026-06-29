@@ -151,6 +151,11 @@
                 <input type="password" name="password" placeholder="SSH şifre" required>
                 <input type="text" name="domain" placeholder="Domain" required class="full-span">
                 <input type="text" name="trojan_config" placeholder="Opsiyonel Trojan config" class="full-span">
+                <select name="country_id" id="addServerCountry" class="full-span"></select>
+                <div id="addServerNewCountry" class="full-span" style="display:none;gap:8px;grid-template-columns:2fr 1fr;">
+                    <input type="text" name="country_name" placeholder="Yeni ülke adı">
+                    <input type="text" name="country_code" placeholder="ISO (AR)" maxlength="4">
+                </div>
                 <button type="submit" class="btn btn-primary full-span">Sunucu ekle</button>
             </form>
         </div>
@@ -170,6 +175,11 @@
                 <input type="text" name="domain" placeholder="Domain" required class="full-span">
                 <input type="text" name="adminUser" placeholder="Panel kullanıcı" value="Admin">
                 <input type="password" name="adminPass" placeholder="Panel şifre" value="ChangeMe123!">
+                <select name="country_id" id="installServerCountry" class="full-span"></select>
+                <div id="installServerNewCountry" class="full-span" style="display:none;gap:8px;grid-template-columns:2fr 1fr;">
+                    <input type="text" name="country_name" placeholder="Yeni ülke adı">
+                    <input type="text" name="country_code" placeholder="ISO (AR)" maxlength="4">
+                </div>
                 <button type="submit" class="btn btn-primary full-span">Kurulumu başlat</button>
             </form>
         </div>
@@ -241,6 +251,15 @@
                 <input type="text" name="min_supported_version" placeholder="Min sürüm (örn 2.3.0)">
                 <button type="submit" class="btn btn-primary full-span">Oluştur</button>
             </form>
+        </div>
+    </div>
+
+    <div id="appPickerModal" class="modal">
+        <div class="modal-content">
+            <button class="close icon-btn"><i class="ri-close-line"></i></button>
+            <h2>Hangi uygulamaya atansın?</h2>
+            <p class="hint">Bu sunucunun config'leri seçtiğin uygulamaya yayınlanacak.</p>
+            <div id="appPickerList" class="form-grid"></div>
         </div>
     </div>
 

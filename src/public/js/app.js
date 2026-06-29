@@ -103,6 +103,7 @@ function renderServers() {
                     <div><strong>${escapeHtml(s.name)}</strong><small>${escapeHtml(s.domain)} · ${escapeHtml(s.ip)}</small></div>
                 </div>
                 <div class="card-actions">
+                    <button class="icon-btn" data-action="publish-server" data-id="${s.id}" title="Yayınla + uygulamaya ata"><i class="ri-rocket-2-line"></i></button>
                     <button class="icon-btn" data-action="toggle-users" data-id="${s.id}" title="Kullanıcılar"><i class="ri-group-line"></i></button>
                     <button class="icon-btn" data-action="edit-server" data-id="${s.id}" title="Düzenle"><i class="ri-pencil-line"></i></button>
                     <button class="icon-btn" data-action="refresh-server" data-id="${s.id}" title="Durumu yenile"><i class="ri-refresh-line"></i></button>
@@ -212,6 +213,43 @@ function renderAppCatalog() {
     panel.innerHTML = `<article class="card"><div class="subpanel-head"><h4>Seçili uygulamanın gördüğü config\'ler</h4></div>${rows}</article>`;
 }
 
+/* ===== One-click publish: activate a server's configs + assign to an app ===== */
+let pendingAppPick = null;
+// Resolves with the chosen app id (or null if the picker is closed).
+function chooseApp() {
+    return new Promise((resolve) => {
+        pendingAppPick = resolve;
+        document.getElementById('appPickerList').innerHTML = state.apps.map((a) =>
+            `<button type="button" class="btn btn-secondary full-span" data-action="pick-app" data-id="${a.id}">${escapeHtml(a.name)} — <small>${escapeHtml(a.slug)}</small></button>`).join('');
+        openModal('appPickerModal');
+    });
+}
+async function publishServer(serverId) {
+    const items = state.catalog.filter((c) => c.server_id === serverId);
+    if (!items.length) { alert('Bu sunucuda config yok. Önce kart içinden "Varsayılanları oluştur" deyin.'); return; }
+
+    // 1) Activate every draft/hidden config of this server.
+    await Promise.all(items.filter((i) => i.status !== 'active')
+        .map((i) => api(`/catalog/${i.id}`, { method: 'PUT', body: JSON.stringify({ status: 'active' }) })));
+
+    // 2) Pick the target app (auto when there is exactly one).
+    if (!state.apps.length) state.apps = (await api('/apps')) || [];
+    if (!state.apps.length) {
+        await loadAll({ silent: true });
+        alert(`${items.length} config yayınlandı (active). Henüz uygulama yok — "Apps" sekmesinden uygulama oluşturup atayın.`);
+        return;
+    }
+    const appId = state.apps.length === 1 ? state.apps[0].id : await chooseApp();
+    if (!appId) { await loadAll({ silent: true }); return; }
+
+    // 3) Expose all of this server's configs to that app.
+    await Promise.all(items.map((i) =>
+        api(`/apps/${appId}/catalog`, { method: 'POST', body: JSON.stringify({ catalog_item_id: i.id, status: 'active' }) })));
+    await loadAll({ silent: true });
+    const appName = state.apps.find((a) => a.id === appId)?.name || `#${appId}`;
+    alert(`${items.length} config yayınlandı ve "${appName}" uygulamasına atandı.`);
+}
+
 /* ===== LOGS / DEVICES / BANS ===== */
 function pager(kind, page, total, pageSize) {
     const last = Math.max(1, Math.ceil((total || 0) / (pageSize || 100)));
@@ -298,12 +336,13 @@ function openModal(id) { document.getElementById(id).classList.add('open'); }
 function closeModals() {
     document.querySelectorAll('.modal').forEach((m) => m.classList.remove('open'));
     if (terminalSocket) terminalSocket.disconnect();
+    if (pendingAppPick) { const resolve = pendingAppPick; pendingAppPick = null; resolve(null); }
 }
 document.querySelectorAll('.close').forEach((b) => b.addEventListener('click', closeModals));
 window.addEventListener('click', (e) => { if (e.target.classList.contains('modal')) closeModals(); });
 
-document.getElementById('addServerBtn').addEventListener('click', () => openModal('addServerModal'));
-document.getElementById('installServerBtn').addEventListener('click', () => openModal('installServerModal'));
+document.getElementById('addServerBtn').addEventListener('click', () => { populateCountrySelect('addServerCountry'); openModal('addServerModal'); });
+document.getElementById('installServerBtn').addEventListener('click', () => { populateCountrySelect('installServerCountry'); openModal('installServerModal'); });
 document.getElementById('addCountryBtn').addEventListener('click', () => openModal('countryModal'));
 document.getElementById('newAppBtn').addEventListener('click', () => openModal('appModal'));
 document.getElementById('addConfigBtn').addEventListener('click', openConfigModal);
@@ -328,6 +367,39 @@ function populateConfigUsers() {
 }
 document.getElementById('configServer').addEventListener('change', populateConfigUsers);
 
+/* ===== Server country picker (add/install) ===== */
+// Fill a server-modal country <select> with existing countries + an "auto" and a
+// "new country" option. Value is the country id, '' = infer from name, '__new__'
+// = reveal the name/code inputs.
+function populateCountrySelect(selectId) {
+    const sel = document.getElementById(selectId);
+    if (!sel) return;
+    sel.innerHTML = ['<option value="">🌍 Ülke: otomatik (sunucu adından)</option>']
+        .concat(state.countries.map((c) => `<option value="${c.id}">${escapeHtml(c.name)} (${escapeHtml(c.code)})</option>`))
+        .concat(['<option value="__new__">＋ Yeni ülke ekle…</option>'])
+        .join('');
+    const wrap = document.getElementById(selectId === 'addServerCountry' ? 'addServerNewCountry' : 'installServerNewCountry');
+    if (wrap) wrap.style.display = 'none';
+}
+['addServerCountry', 'installServerCountry'].forEach((selectId) => {
+    const sel = document.getElementById(selectId);
+    const wrap = document.getElementById(selectId === 'addServerCountry' ? 'addServerNewCountry' : 'installServerNewCountry');
+    sel?.addEventListener('change', () => { if (wrap) wrap.style.display = sel.value === '__new__' ? 'grid' : 'none'; });
+});
+// Normalize a server form into the country fields the API expects: a numeric
+// country_id, OR a new country_name(+code), OR nothing (auto-infer).
+function serverFormData(form) {
+    const d = formData(form);
+    if (d.country_id === '__new__') {
+        delete d.country_id;
+        if (!d.country_name || !d.country_name.trim()) { delete d.country_name; delete d.country_code; }
+    } else {
+        delete d.country_name; delete d.country_code;
+        if (!d.country_id) delete d.country_id;
+    }
+    return d;
+}
+
 /* ===== Country flag preview ===== */
 const countryCodeInput = document.getElementById('countryCodeInput');
 countryCodeInput.addEventListener('input', () => {
@@ -349,11 +421,11 @@ function formData(form) { return Object.fromEntries(new FormData(form).entries()
 
 document.getElementById('addServerForm').addEventListener('submit', async (e) => {
     e.preventDefault();
-    try { await submitForm('/servers', formData(e.target), 'addServerModal'); } catch (err) { alert(err.message); }
+    try { await submitForm('/servers', serverFormData(e.target), 'addServerModal'); } catch (err) { alert(err.message); }
 });
 document.getElementById('installServerForm').addEventListener('submit', async (e) => {
     e.preventDefault();
-    try { await submitForm('/install', formData(e.target), 'installServerModal'); } catch (err) { alert(err.message); }
+    try { await submitForm('/install', serverFormData(e.target), 'installServerModal'); } catch (err) { alert(err.message); }
 });
 document.getElementById('editServerForm').addEventListener('submit', async (e) => {
     e.preventDefault();
@@ -410,6 +482,12 @@ document.body.addEventListener('click', async (e) => {
     const id = Number(target.dataset.id);
     try {
         if (action === 'toggle-users') { state.selectedServerId = state.selectedServerId === id ? null : id; renderServers(); }
+        else if (action === 'publish-server') { await publishServer(id); }
+        else if (action === 'pick-app') {
+            const resolve = pendingAppPick; pendingAppPick = null;
+            document.getElementById('appPickerModal').classList.remove('open');
+            if (resolve) resolve(id);
+        }
         else if (action === 'edit-server') {
             const s = state.servers.find((x) => x.id === id);
             const f = document.getElementById('editServerForm');

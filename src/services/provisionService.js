@@ -220,7 +220,7 @@ async function runInstall(serverId, serverConfig, options = {}, io = null) {
 
     const users = await runStep(io, job, 'user_sync', async () => {
       const desiredUsers = await syncDefaultUsers(server, { remote: true });
-      const { country, group } = await ensureCountryAndGroupForServer(server);
+      const { country, group } = await ensureCountryAndGroupForServer(server, options.country || {});
       await ensureDefaultCatalog(server, desiredUsers, country.id, group.id);
       return {
         stdout: `Prepared ${desiredUsers.length} default users. Remote status: ${desiredUsers.map((user) => `${user.name}:${user.remote_status}`).join(', ')}`,

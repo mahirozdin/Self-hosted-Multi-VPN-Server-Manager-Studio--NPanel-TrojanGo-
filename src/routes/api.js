@@ -232,7 +232,7 @@ router.get('/servers', async (req, res) => {
 
 router.post('/servers', async (req, res) => {
     try {
-        const { name, ip, port, vpn_port, username, password, domain, trojan_config } = req.body;
+        const { name, ip, port, vpn_port, username, password, domain, trojan_config, country_id, country_name, country_code } = req.body;
         const server = await Server.create({
             name,
             ip,
@@ -245,7 +245,11 @@ router.post('/servers', async (req, res) => {
             status: 'online',
         });
 
-        const { country, group } = await ensureCountryAndGroupForServer(server);
+        const { country, group } = await ensureCountryAndGroupForServer(server, {
+            countryId: country_id ? Number(country_id) : null,
+            countryName: country_name,
+            countryCode: country_code,
+        });
         const users = await syncDefaultUsers(server, { remote: false });
         await ensureDefaultCatalog(server, users, country.id, group.id);
         monitorService.updateServerStatus(server);
@@ -307,7 +311,7 @@ router.post('/servers/:id/refresh', async (req, res) => {
 
 router.post('/install', async (req, res) => {
     try {
-        const { name, ip, port, vpn_port, username, password, domain, adminUser, adminPass } = req.body;
+        const { name, ip, port, vpn_port, username, password, domain, adminUser, adminPass, country_id, country_name, country_code } = req.body;
         const server = await Server.create({
             name,
             ip,
@@ -331,6 +335,11 @@ router.post('/install', async (req, res) => {
                 adminUser: adminUser || 'Admin',
                 adminPass: adminPass || 'ChangeMe123!',
                 mainPort: vpn_port || 443,
+                country: {
+                    countryId: country_id ? Number(country_id) : null,
+                    countryName: country_name,
+                    countryCode: country_code,
+                },
             },
             getIo(req),
         ).catch((err) => {

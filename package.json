@@ -1,7 +1,7 @@
 {
   "name": "npanel-manager-studio",
   "version": "1.0.0",
-  "description": "A web-based management system for automating Npanel VPN server installations and monitoring.",
+  "description": "Self-hosted control plane for NPanel/Trojan-Go VPN nodes: an SSH provisioning + monitoring studio and a multi-tenant, attested mobile VPN backend (/v1 API).",
   "main": "src/server.js",
   "scripts": {
     "start": "node src/server.js",

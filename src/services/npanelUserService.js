@@ -139,16 +139,34 @@ function inferCountryName(serverName) {
   return parts.length > 1 ? parts[parts.length - 1] : 'Imported';
 }
 
-async function ensureCountryAndGroupForServer(server) {
-  const countryName = inferCountryName(server.name);
+// flagcdn URL for a 2-letter ISO code; otherwise pass the raw value through so
+// the panel can still render a text pill. Keeps auto-created countries showing a
+// real flag in the app instead of a bare code.
+function flagForCode(code) {
+  const c = String(code || '').trim().toLowerCase();
+  return /^[a-z]{2}$/.test(c) ? `https://flagcdn.com/w80/${c}.png` : (code || 'XX');
+}
+
+// Resolve the country a server belongs to. Priority:
+//   1. An explicit existing country (countryId) chosen in the panel.
+//   2. An explicit new country name (countryName) [+ countryCode], created here.
+//   3. Fallback: infer from the server name (legacy "City, Country" convention).
+async function resolveCountryForServer(server, { countryId, countryName, countryCode } = {}) {
+  if (countryId) {
+    const existing = await Country.findByPk(countryId);
+    if (existing) return existing;
+  }
+  const name = (countryName && countryName.trim()) || inferCountryName(server.name);
+  const code = ((countryCode && countryCode.trim()) || name.slice(0, 2)).toUpperCase() || 'XX';
   const [country] = await Country.findOrCreate({
-    where: { name: countryName },
-    defaults: {
-      name: countryName,
-      code: countryName.slice(0, 2).toUpperCase() || 'XX',
-      flag: countryName.slice(0, 2).toUpperCase() || 'XX',
-    },
+    where: { name },
+    defaults: { name, code, flag: flagForCode(code) },
   });
+  return country;
+}
+
+async function ensureCountryAndGroupForServer(server, options = {}) {
+  const country = await resolveCountryForServer(server, options);
 
   const [group] = await ServerGroup.findOrCreate({
     where: {
