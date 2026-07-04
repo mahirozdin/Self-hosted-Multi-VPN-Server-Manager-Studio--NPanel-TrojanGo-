@@ -14,6 +14,7 @@ const state = {
     servers: [], countries: [], groups: [], users: [], catalog: [], jobs: [],
     apps: [], appAssignments: [], selectedAppId: null,
     selectedServerId: null, filter: '',
+    overview: null, incidents: [], settings: {},
     logsPage: 1, devicesPage: 1, bansPage: 1,
 };
 
@@ -32,6 +33,74 @@ function sslDays(v) {
     const d = Math.round((new Date(v) - Date.now()) / 86400000);
     return d > 0 ? `${d} gün` : 'süresi doldu';
 }
+function formatBytes(n) {
+    n = Number(n || 0);
+    if (n < 1024) return `${n} B`;
+    const units = ['KB', 'MB', 'GB', 'TB', 'PB'];
+    let i = -1;
+    do { n /= 1024; i += 1; } while (n >= 1024 && i < units.length - 1);
+    return `${n.toFixed(n < 10 ? 2 : 1)} ${units[i]}`;
+}
+function formatSpeed(bps) { return bps ? `${formatBytes(bps)}/s` : '0'; }
+function setText(id, v) { const el = document.getElementById(id); if (el) el.textContent = v; }
+// Health verdict from the monitor, with a legacy fallback for old rows.
+function healthOf(s) {
+    return s.health_status || (s.status === 'online' ? 'online' : (s.status === 'error' ? 'offline' : 'unknown'));
+}
+function statusLabel(s) {
+    return ({ online: 'online', degraded: 'kısmi', offline: 'offline', unknown: 'bilinmiyor', installing: 'kuruluyor', renewing_ssl: 'sertifika', error: 'offline' })[s] || s;
+}
+function remoteLabel(s) {
+    return ({ synced: 'senkron', desired: 'bekliyor', trojan_api_error: 'hata' })[s] || s || 'bekliyor';
+}
+function flagHtml(c) {
+    if (!c) return '<span class="flag-pill">?</span>';
+    return String(c.flag || '').startsWith('http')
+        ? `<img class="flag" src="${escapeHtml(c.flag)}" alt="">`
+        : `<span class="flag-pill">${escapeHtml(c.flag || c.code)}</span>`;
+}
+async function ensureApps() {
+    if (!state.apps.length) { try { state.apps = (await api('/apps')) || []; } catch (_) { /* ignore */ } }
+    return state.apps;
+}
+
+// Full ISO-3166 alpha-2 code list; names come from the browser (Intl) and flags
+// from flagcdn — so the country picker is complete without seeding the DB.
+const ISO_COUNTRY_CODES = ('AD AE AF AG AI AL AM AO AR AS AT AU AW AX AZ BA BB BD BE BF BG BH BI BJ BL BM BN BO BQ BR BS BT BW BY BZ CA CC CD CF CG CH CI CK CL CM CN CO CR CU CV CW CX CY CZ DE DJ DK DM DO DZ EC EE EG EH ER ES ET FI FJ FK FM FO FR GA GB GD GE GF GG GH GI GL GM GN GP GQ GR GT GU GW GY HK HN HR HT HU ID IE IL IM IN IO IQ IR IS IT JE JM JO JP KE KG KH KI KM KN KP KR KW KY KZ LA LB LC LI LK LR LS LT LU LV LY MA MC MD ME MF MG MH MK ML MM MN MO MP MQ MR MS MT MU MV MW MX MY MZ NA NC NE NF NG NI NL NO NP NR NU NZ OM PA PE PF PG PH PK PL PM PN PR PS PT PW PY QA RE RO RS RU RW SA SB SC SD SE SG SH SI SK SL SM SN SO SR SS ST SV SX SY SZ TC TD TG TH TJ TK TL TM TN TO TR TT TV TW TZ UA UG US UY UZ VA VC VE VG VI VN VU WF WS XK YE YT ZA ZM ZW').split(' ');
+// Emoji flag from an ISO-2 code (regional indicator symbols) — for <option>
+// labels, where <img> can't be rendered.
+function flagEmoji(code) {
+    if (!/^[A-Za-z]{2}$/.test(code || '')) return '';
+    const cc = String(code).toUpperCase();
+    return String.fromCodePoint(0x1F1E6 + cc.charCodeAt(0) - 65, 0x1F1E6 + cc.charCodeAt(1) - 65);
+}
+let _countryCatalog = null;
+function allCountries() {
+    if (_countryCatalog) return _countryCatalog;
+    // English names everywhere (panel + API), even though the panel UI is Turkish.
+    let names = null;
+    try { names = new Intl.DisplayNames(['en'], { type: 'region' }); } catch (_) { names = null; }
+    _countryCatalog = ISO_COUNTRY_CODES.map((code) => {
+        let name = code;
+        try { name = (names && names.of(code)) || code; } catch (_) { name = code; }
+        return { code, name, flag: `https://flagcdn.com/w80/${code.toLowerCase()}.png` };
+    }).filter((c) => c.name && c.name !== c.code)
+        .sort((a, b) => a.name.localeCompare(b.name, 'en'));
+    return _countryCatalog;
+}
+function countryNameForCode(code) {
+    const c = allCountries().find((x) => x.code === code);
+    return c ? c.name : code;
+}
+// English display name for a stored country row (from its ISO code), so the panel
+// shows English even for rows saved before this convention.
+function countryLabel(c) {
+    if (c && c.code && /^[A-Za-z]{2}$/.test(c.code)) {
+        const found = allCountries().find((x) => x.code === String(c.code).toUpperCase());
+        if (found) return found.name;
+    }
+    return c ? c.name : '';
+}
 
 async function api(path, options = {}) {
     const res = await fetch(`${API_URL}${path}`, { ...options, headers: { ...headers, ...(options.headers || {}) } });
@@ -49,8 +118,10 @@ async function api(path, options = {}) {
 function showPage(page) {
     document.querySelectorAll('.nav-tab').forEach((t) => t.classList.toggle('active', t.dataset.page === page));
     document.querySelectorAll('.page').forEach((p) => p.classList.toggle('active', p.id === `page-${page}`));
+    if (page === 'overview') loadOverview();
     if (page === 'apps') loadApps();
     if (page === 'logs') searchLogs();
+    if (page === 'settings') loadSettings();
 }
 document.querySelectorAll('.nav-tab').forEach((t) => t.addEventListener('click', () => showPage(t.dataset.page)));
 
@@ -76,10 +147,10 @@ function serverName(id) { return state.servers.find((s) => s.id === id)?.name ||
 function jobForServer(id) { return state.jobs.find((j) => j.server_id === id && ['queued', 'running'].includes(j.status)); }
 
 function renderServers() {
-    document.getElementById('mServers').textContent = state.servers.length;
-    document.getElementById('mOnline').textContent = state.servers.filter((s) => s.status === 'online').length;
-    document.getElementById('mError').textContent = state.servers.filter((s) => s.status === 'error').length;
-    document.getElementById('mJobs').textContent = state.jobs.filter((j) => ['queued', 'running'].includes(j.status)).length;
+    setText('mServers', state.servers.length);
+    setText('mOnline', state.servers.filter((s) => healthOf(s) === 'online').length);
+    setText('mError', state.servers.filter((s) => healthOf(s) === 'offline').length);
+    setText('mJobs', state.jobs.filter((j) => ['queued', 'running'].includes(j.status)).length);
 
     const filter = state.filter.toLowerCase();
     const servers = state.servers.filter((s) => !filter
@@ -90,16 +161,35 @@ function renderServers() {
     const list = document.getElementById('serverList');
     if (!servers.length) { list.innerHTML = '<div class="empty">Sunucu yok — "Ekle" veya "Kur" ile başlayın</div>'; return; }
 
-    list.innerHTML = servers.map((s) => {
-        const users = state.users.filter((u) => u.server_id === s.id);
-        const configs = state.catalog.filter((c) => c.server_id === s.id).length;
-        const job = jobForServer(s.id);
-        const expanded = state.selectedServerId === s.id;
-        return `
+    // Group servers by country, mirroring the mobile app's country → server layout.
+    const byCountry = new Map();
+    for (const s of servers) {
+        const key = s.country_id || 0;
+        if (!byCountry.has(key)) byCountry.set(key, []);
+        byCountry.get(key).push(s);
+    }
+    const ordered = [...state.countries].sort((a, b) => (a.sort_order - b.sort_order) || String(a.name).localeCompare(b.name));
+    const groups = [];
+    for (const c of ordered) { if (byCountry.has(c.id)) groups.push([c, byCountry.get(c.id)]); }
+    if (byCountry.has(0)) groups.push([null, byCountry.get(0)]);
+
+    list.innerHTML = groups.map(([c, srvs]) => {
+        const head = `<div class="country-group-head">${flagHtml(c)}<div><strong>${c ? escapeHtml(countryLabel(c)) : 'Ülkesiz'}</strong> ${c ? `<small>${escapeHtml(c.code)}</small>` : ''}</div><span class="count">${srvs.length} sunucu</span></div>`;
+        return `<div class="country-group">${head}${srvs.map(serverCard).join('')}</div>`;
+    }).join('');
+}
+
+function serverCard(s) {
+    const users = state.users.filter((u) => u.server_id === s.id);
+    const configs = state.catalog.filter((c) => c.server_id === s.id).length;
+    const job = jobForServer(s.id);
+    const expanded = state.selectedServerId === s.id;
+    const showStatus = ['installing', 'renewing_ssl'].includes(s.status) ? s.status : healthOf(s);
+    return `
         <article class="card ${expanded ? 'selected' : ''}">
             <div class="card-head">
                 <div class="card-title">
-                    <span class="pill pill-${escapeHtml(s.status)}">${escapeHtml(s.status)}</span>
+                    <span class="pill pill-${escapeHtml(showStatus)}">${escapeHtml(statusLabel(showStatus))}</span>
                     <div><strong>${escapeHtml(s.name)}</strong><small>${escapeHtml(s.domain)} · ${escapeHtml(s.ip)}</small></div>
                 </div>
                 <div class="card-actions">
@@ -117,28 +207,121 @@ function renderServers() {
                 <span><i class="ri-pulse-line"></i> ${s.latency ? `${s.latency} ms` : '--'}</span>
                 <span><i class="ri-plug-line"></i> SSH ${escapeHtml(s.ssh_status || 'unknown')}</span>
                 <span><i class="ri-shield-check-line"></i> SSL ${escapeHtml(sslDays(s.ssl_expiry))}</span>
-                <span><i class="ri-group-line"></i> ${users.length} user</span>
+                <span><i class="ri-group-line"></i> ${users.length} kullanıcı</span>
                 <span><i class="ri-global-line"></i> ${configs} config</span>
             </div>
             ${job ? `<div class="steps">${(job.steps || []).sort((a, b) => a.sort_order - b.sort_order).map((st) => `<span class="step-dot ${escapeHtml(st.status)}" title="${escapeHtml(st.label)}"></span>`).join('')}</div><div class="hint">${escapeHtml(job.current_step || job.status)}</div>` : ''}
             ${expanded ? `
             <div class="subpanel">
                 <div class="subpanel-head">
-                    <h4>Bu host'taki kullanıcılar</h4>
-                    <button class="btn btn-secondary btn-compact" data-action="sync-users" data-id="${s.id}"><i class="ri-user-add-line"></i> Varsayılanları oluştur</button>
+                    <h4>Kullanıcılar (${users.length})</h4>
+                    <div style="display:flex;gap:6px;flex-wrap:wrap">
+                        <button class="btn btn-secondary btn-compact" data-action="add-user" data-id="${s.id}"><i class="ri-user-add-line"></i> Kullanıcı</button>
+                        <button class="btn btn-secondary btn-compact" data-action="import-users" data-id="${s.id}"><i class="ri-download-2-line"></i> İçe aktar</button>
+                        <button class="btn btn-secondary btn-compact" data-action="sync-users-now" data-id="${s.id}"><i class="ri-refresh-line"></i> Senkronize et</button>
+                        <button class="btn btn-secondary btn-compact" data-action="sync-users" data-id="${s.id}"><i class="ri-magic-line"></i> Varsayılanlar</button>
+                    </div>
                 </div>
-                ${users.length ? users.map((u) => `
-                    <div class="list-row">
-                        <div class="grow"><strong>${escapeHtml(u.name)}</strong><small>${escapeHtml(u.protocol === 0 ? 'tcp' : 'ws')}</small></div>
-                        <span class="pill plain pill-${escapeHtml(u.profile_type)}">${escapeHtml(u.profile_type)}</span>
-                        <span class="pill pill-${escapeHtml(u.remote_status)}">${escapeHtml(u.remote_status)}</span>
-                    </div>`).join('') : '<div class="empty">Kullanıcı yok</div>'}
+                ${users.length ? users.map((u) => userRow(s, u)).join('') : '<div class="empty">Kullanıcı yok — "Varsayılanlar" ile Free/Premium oluşturun</div>'}
             </div>` : ''}
         </article>`;
-    }).join('');
+}
+
+function userRow(s, u) {
+    const up = formatBytes(u.traffic_up); const down = formatBytes(u.traffic_down);
+    const live = (u.speed_down_current || u.speed_up_current)
+        ? ` · <span style="color:var(--green)">↓${formatSpeed(u.speed_down_current)} ↑${formatSpeed(u.speed_up_current)}</span>` : '';
+    const limit = (u.speed_download || u.speed_upload) ? `${u.speed_download || u.speed_upload} KiB/s` : 'limitsiz';
+    const imported = u.source === 'imported';
+    const statusPill = imported
+        ? '<span class="pill plain pill-imported" title="Sunucudan içe aktarıldı — config NPanel’de, düzenlenemez">içe aktarıldı</span>'
+        : `<span class="pill pill-${escapeHtml(u.remote_status)}" title="${escapeHtml(u.remote_message || '')}">${escapeHtml(remoteLabel(u.remote_status))}</span>`;
+    const actions = imported
+        ? `<button class="icon-btn" data-action="adopt-user" data-server="${s.id}" title="Config ile yönet"><i class="ri-links-line"></i></button>
+           <button class="icon-btn warn" data-action="delete-user" data-server="${s.id}" data-id="${u.id}" data-imported="1" title="Panelden kaldır (sunucuya dokunmaz)"><i class="ri-eye-off-line"></i></button>`
+        : `<button class="icon-btn" data-action="copy-config" data-config="${escapeHtml(u.config_ws || '')}" title="Config kopyala"><i class="ri-file-copy-line"></i></button>
+           <button class="icon-btn" data-action="edit-user" data-server="${s.id}" data-id="${u.id}" title="Düzenle"><i class="ri-pencil-line"></i></button>
+           <button class="icon-btn ${u.enabled ? '' : 'warn'}" data-action="toggle-user" data-server="${s.id}" data-id="${u.id}" data-enabled="${u.enabled ? 1 : 0}" title="${u.enabled ? 'Devre dışı bırak' : 'Aktifleştir'}"><i class="ri-${u.enabled ? 'pause' : 'play'}-circle-line"></i></button>
+           <button class="icon-btn warn" data-action="delete-user" data-server="${s.id}" data-id="${u.id}" title="Sil"><i class="ri-delete-bin-line"></i></button>`;
+    return `
+        <div class="list-row">
+            <div class="grow"><strong>${escapeHtml(u.name)}</strong>
+                <small class="traffic">↑<b>${up}</b> ↓<b>${down}</b>${live} · ${escapeHtml(limit)} · ip ${u.ip_limit ? u.ip_limit : '∞'}</small></div>
+            <span class="pill plain pill-${escapeHtml(u.profile_type)}">${escapeHtml(u.profile_type)}</span>
+            ${statusPill}
+            <div class="user-actions">${actions}</div>
+        </div>`;
+}
+
+/* ===== OVERVIEW ===== */
+async function loadOverview() {
+    try {
+        const [ov, incidents] = await Promise.all([api('/overview'), api('/incidents?status=open&limit=50')]);
+        state.overview = ov; state.incidents = incidents || [];
+        renderOverview();
+    } catch (_) { /* silent */ }
+}
+function renderOverview() {
+    const ov = state.overview; if (!ov) return;
+    setText('ovServers', ov.servers.total);
+    setText('ovOnline', ov.servers.online || 0);
+    setText('ovDegraded', ov.servers.degraded || 0);
+    setText('ovOffline', ov.servers.offline || 0);
+    setText('ovCountries', ov.countryCount || 0);
+    setText('ovConfigs', ov.activeConfigs || 0);
+    setText('ovIncidentCount', ov.openIncidents || 0);
+
+    const inc = state.incidents;
+    document.getElementById('ovIncidents').innerHTML = inc.length ? inc.map((i) => `
+        <div class="ov-row"><span class="pill pill-offline">${escapeHtml(i.kind)}</span>
+            <div class="grow"><strong>${escapeHtml(i.server ? i.server.name : `#${i.server_id}`)}</strong><small>${escapeHtml(i.message || '')}</small></div>
+            <span class="when">${escapeHtml(formatDate(i.started_at))}</span></div>`).join('') : '<div class="empty">Açık olay yok — her şey yolunda</div>';
+
+    const certs = ov.certsExpiringSoon || [];
+    document.getElementById('ovCerts').innerHTML = certs.length ? certs.map((c) => `
+        <div class="ov-row"><span class="pill ${c.daysLeft < 7 ? 'pill-offline' : 'pill-draft'}">${c.daysLeft} gün</span>
+            <div class="grow"><strong>${escapeHtml(c.name)}</strong><small>${escapeHtml(c.domain)}</small></div>
+            <button class="btn btn-compact" data-action="renew-ssl" data-id="${c.id}">Yenile</button></div>`).join('') : '<div class="empty">Yakında dolan sertifika yok</div>';
+}
+
+/* ===== SETTINGS ===== */
+async function loadSettings() {
+    try {
+        await ensureApps();
+        const r = await api('/settings');
+        state.settings = (r && r.settings) || {};
+        const badge = document.getElementById('smtpStatus');
+        const configured = r && r.smtp && r.smtp.configured;
+        badge.textContent = configured ? 'yapılandırıldı' : 'yapılandırılmadı';
+        badge.className = `pill ${configured ? 'pill-online' : 'pill-error'}`;
+        const sel = document.getElementById('settingsDefaultApp');
+        sel.innerHTML = '<option value="">— seçili değil —</option>' + state.apps.map((a) => `<option value="${a.id}">${escapeHtml(a.name)}</option>`).join('');
+        const f = document.getElementById('settingsForm');
+        f.alert_email.value = state.settings.alert_email || '';
+        f.default_app_id.value = state.settings.default_app_id || '';
+        f.ssl_renew_days.value = state.settings.ssl_renew_days || 21;
+        f.free_speed_kib.value = state.settings.free_speed_kib || 4096;
+        f.premium_speed_kib.value = state.settings.premium_speed_kib || 0;
+        f.free_ip_limit.value = state.settings.free_ip_limit != null ? state.settings.free_ip_limit : 0;
+        f.monitor_enabled.checked = String(state.settings.monitor_enabled) === 'true';
+        f.auto_renew_ssl.checked = String(state.settings.auto_renew_ssl) === 'true';
+        f.config_test_enabled.checked = String(state.settings.config_test_enabled) === 'true';
+        f.config_test_timeout.value = state.settings.config_test_timeout || 30;
+    } catch (_) { /* silent */ }
 }
 
 /* ===== VPN LIST ===== */
+// Latency summary from the last-10-test window (only when the config passed).
+function latencyText(i) {
+    if (!i.last_test_ok || i.latency_avg == null) return '';
+    return ` · <span class="lat-tag">⏱ ort ${i.latency_avg} / min ${i.latency_min} / maks ${i.latency_max} ms</span>`;
+}
+// Health pill from the real-tunnel test: green ok, red fail (with reason), grey untested.
+function testPill(i) {
+    if (i.last_test_ok == null) return '<span class="pill pill-unknown" title="Henüz test edilmedi">test —</span>';
+    if (i.last_test_ok) return '<span class="pill pill-online" title="Gerçek tünel testi başarılı">test ✓</span>';
+    return `<span class="pill pill-offline" title="${escapeHtml(i.last_test_error || 'başarısız')}">test ✗</span>`;
+}
 function renderVpn() {
     document.getElementById('mCountries').textContent = state.countries.length;
     document.getElementById('mActive').textContent = state.catalog.filter((c) => c.status === 'active').length;
@@ -155,7 +338,10 @@ function renderVpn() {
         return `
         <article class="card">
             <div class="card-head">
-                <div class="card-title">${flag}<div><strong>${escapeHtml(c.name)}</strong><small>${escapeHtml(c.code)} · ${items.length} config</small></div></div>
+                <div class="card-title">${flag}<div><strong>${escapeHtml(countryLabel(c))}</strong><small>${escapeHtml(c.code)} · ${items.length} config</small></div></div>
+                <div class="card-actions">
+                    <button class="icon-btn warn" data-action="delete-country" data-id="${c.id}" title="Ülkeyi sil (config yoksa)"><i class="ri-delete-bin-line"></i></button>
+                </div>
             </div>
             ${items.length ? `<div class="subpanel">${items.map((i) => {
                 const srv = state.servers.find((s) => s.id === i.server_id);
@@ -163,9 +349,12 @@ function renderVpn() {
                 const sni = i.sni || srv?.domain || '—';
                 return `
                 <div class="list-row">
-                    <div class="grow"><strong>${escapeHtml(i.display_name)}</strong><small>giriş ${escapeHtml(entry)} · SNI ${escapeHtml(sni)}</small></div>
+                    <div class="grow"><strong>${escapeHtml(i.display_name)}</strong><small>giriş ${escapeHtml(entry)} · SNI ${escapeHtml(sni)}${latencyText(i)}</small></div>
                     <span class="pill plain pill-${escapeHtml(i.type)}">${escapeHtml(i.type)}</span>
+                    ${testPill(i)}
                     <span class="pill pill-${escapeHtml(i.status)}">${escapeHtml(i.status)}</span>
+                    <button class="icon-btn" data-action="test-config" data-id="${i.id}" title="Configi şimdi test et"><i class="ri-pulse-line"></i></button>
+                    <button class="icon-btn" data-action="edit-catalog" data-id="${i.id}" title="Düzenle"><i class="ri-pencil-line"></i></button>
                     <button class="icon-btn" data-action="toggle-catalog" data-id="${i.id}" title="Yayınla/Taslak"><i class="ri-toggle-line"></i></button>
                     <button class="icon-btn warn" data-action="delete-catalog" data-id="${i.id}" title="Sil"><i class="ri-delete-bin-line"></i></button>
                 </div>`;
@@ -341,19 +530,147 @@ function closeModals() {
 document.querySelectorAll('.close').forEach((b) => b.addEventListener('click', closeModals));
 window.addEventListener('click', (e) => { if (e.target.classList.contains('modal')) closeModals(); });
 
-document.getElementById('addServerBtn').addEventListener('click', () => { populateCountrySelect('addServerCountry'); openModal('addServerModal'); });
-document.getElementById('installServerBtn').addEventListener('click', () => { populateCountrySelect('installServerCountry'); openModal('installServerModal'); });
+// Fill an app <select> with the tenant apps (keeping its leading default option).
+function populateAppSelect(selectId) {
+    ensureApps().then(() => {
+        const sel = document.getElementById(selectId);
+        if (!sel) return;
+        const first = sel.querySelector('option'); // keep "default (from Settings)"
+        sel.innerHTML = (first ? first.outerHTML : '') + state.apps.map((a) => `<option value="${a.id}">${escapeHtml(a.name)}</option>`).join('');
+    });
+}
+document.getElementById('addServerBtn').addEventListener('click', () => { populateCountrySelect('addServerCountry'); populateAppSelect('addServerApp'); openModal('addServerModal'); });
+document.getElementById('installServerBtn').addEventListener('click', () => { populateCountrySelect('installServerCountry'); populateAppSelect('installServerApp'); openModal('installServerModal'); });
 document.getElementById('addCountryBtn').addEventListener('click', () => openModal('countryModal'));
 document.getElementById('newAppBtn').addEventListener('click', () => openModal('appModal'));
 document.getElementById('addConfigBtn').addEventListener('click', openConfigModal);
 document.getElementById('logoutBtn').addEventListener('click', () => { localStorage.removeItem('token'); window.location.href = '/login.html'; });
 document.getElementById('refreshAllBtn').addEventListener('click', async () => { await api('/servers/refresh-all', { method: 'POST' }); setTimeout(() => loadAll({ silent: true }), 1500); });
 document.getElementById('serverSearch').addEventListener('input', (e) => { state.filter = e.target.value; renderServers(); });
+document.getElementById('overviewRefreshBtn').addEventListener('click', loadOverview);
+
+/* ===== Settings form ===== */
+document.getElementById('settingsForm').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const f = e.target;
+    const body = {
+        alert_email: f.alert_email.value,
+        default_app_id: f.default_app_id.value,
+        ssl_renew_days: f.ssl_renew_days.value,
+        free_speed_kib: f.free_speed_kib.value,
+        premium_speed_kib: f.premium_speed_kib.value,
+        free_ip_limit: f.free_ip_limit.value,
+        monitor_enabled: f.monitor_enabled.checked ? 'true' : 'false',
+        auto_renew_ssl: f.auto_renew_ssl.checked ? 'true' : 'false',
+        config_test_enabled: f.config_test_enabled.checked ? 'true' : 'false',
+        config_test_timeout: f.config_test_timeout.value,
+    };
+    try { await api('/settings', { method: 'PUT', body: JSON.stringify(body) }); alert('Ayarlar kaydedildi'); loadSettings(); }
+    catch (err) { alert(err.message); }
+});
+document.getElementById('testEmailBtn').addEventListener('click', async () => {
+    const to = document.getElementById('settingsForm').alert_email.value;
+    try {
+        const r = await api('/settings/test-email', { method: 'POST', body: JSON.stringify({ to }) });
+        alert(r && r.ok ? 'Test e-postası gönderildi ✅' : `Gönderilemedi: ${(r && (r.reason || r.error)) || 'SMTP yapılandırılmadı (.env)'}`);
+    } catch (e) { alert(e.message); }
+});
+
+/* ===== User create/edit modal ===== */
+let editingUser = null;
+function openUserModal(serverId, user) {
+    editingUser = { serverId, userId: user ? user.id : null };
+    const f = document.getElementById('userForm');
+    f.reset();
+    document.getElementById('userModalTitle').textContent = user ? 'Kullanıcıyı düzenle' : 'Kullanıcı ekle';
+    if (user) {
+        f.name.value = user.name;
+        f.profile_type.value = user.profile_type;
+        f.speed_upload.value = user.speed_upload;
+        f.speed_download.value = user.speed_download;
+        f.ip_limit.value = user.ip_limit;
+        f.password.value = '';
+        f.enabled.checked = !!user.enabled;
+    } else {
+        f.enabled.checked = true;
+    }
+    openModal('userModal');
+}
+document.getElementById('userForm').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const f = e.target;
+    const body = {
+        name: f.name.value,
+        profile_type: f.profile_type.value,
+        speed_upload: f.speed_upload.value,
+        speed_download: f.speed_download.value,
+        ip_limit: f.ip_limit.value,
+        enabled: f.enabled.checked,
+    };
+    if (f.password.value.trim()) body.password = f.password.value.trim();
+    try {
+        if (editingUser.userId) {
+            await api(`/servers/${editingUser.serverId}/users/${editingUser.userId}`, { method: 'PUT', body: JSON.stringify(body) });
+        } else {
+            await api(`/servers/${editingUser.serverId}/users`, { method: 'POST', body: JSON.stringify(body) });
+        }
+        closeModals();
+        await loadAll({ silent: true });
+    } catch (err) { alert(err.message); }
+});
+
+/* ===== Catalog (config) edit modal ===== */
+function openCatalogEditModal(item) {
+    const f = document.getElementById('catalogEditForm');
+    f.dataset.id = item.id;
+    f.display_name.value = item.display_name || '';
+    f.type.value = item.type || 'free';
+    f.status.value = item.status || 'active';
+    f.entry_ip.value = item.entry_ip || '';
+    f.sni.value = item.sni || '';
+    f.config.value = '';
+    f.config.placeholder = item.config || 'Trojan config URI (boş = değişmez)';
+    openModal('catalogEditModal');
+}
+document.getElementById('catalogEditForm').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const f = e.target;
+    const body = {
+        display_name: f.display_name.value,
+        type: f.type.value,
+        status: f.status.value,
+        entry_ip: f.entry_ip.value || null,
+        sni: f.sni.value || null,
+    };
+    if (f.config.value.trim()) body.config = f.config.value.trim();
+    try {
+        await api(`/catalog/${f.dataset.id}`, { method: 'PUT', body: JSON.stringify(body) });
+        closeModals();
+        await loadAll({ silent: true });
+    } catch (err) { alert(err.message); }
+});
+
+/* ===== Adopt-config modal (make an imported user manageable) ===== */
+let adoptServerId = null;
+function openAdoptModal(serverId) {
+    adoptServerId = serverId;
+    document.getElementById('adoptForm').reset();
+    openModal('adoptModal');
+}
+document.getElementById('adoptForm').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const d = formData(e.target);
+    try {
+        await api(`/servers/${adoptServerId}/users/adopt`, { method: 'POST', body: JSON.stringify(d) });
+        closeModals();
+        await loadAll({ silent: true });
+    } catch (err) { alert(err.message); }
+});
 
 /* ===== Config modal ===== */
 function openConfigModal() {
     const cs = document.getElementById('configCountry');
-    cs.innerHTML = state.countries.map((c) => `<option value="${c.id}">${escapeHtml(c.name)}</option>`).join('');
+    cs.innerHTML = state.countries.map((c) => `<option value="${c.id}">${flagEmoji(c.code)} ${escapeHtml(c.name)}</option>`).join('');
     const ss = document.getElementById('configServer');
     ss.innerHTML = state.servers.map((s) => `<option value="${s.id}">${escapeHtml(s.name)} (${escapeHtml(s.ip)})</option>`).join('');
     populateConfigUsers();
@@ -374,10 +691,17 @@ document.getElementById('configServer').addEventListener('change', populateConfi
 function populateCountrySelect(selectId) {
     const sel = document.getElementById(selectId);
     if (!sel) return;
-    sel.innerHTML = ['<option value="">🌍 Ülke: otomatik (sunucu adından)</option>']
-        .concat(state.countries.map((c) => `<option value="${c.id}">${escapeHtml(c.name)} (${escapeHtml(c.code)})</option>`))
-        .concat(['<option value="__new__">＋ Yeni ülke ekle…</option>'])
-        .join('');
+    const parts = ['<option value="">🌍 Ülke: otomatik (sunucu adından)</option>'];
+    if (state.countries.length) {
+        parts.push('<optgroup label="Kullanımdaki ülkeler">');
+        parts.push(...state.countries.map((c) => `<option value="id:${c.id}">${flagEmoji(c.code)} ${escapeHtml(c.name)} (${escapeHtml(c.code)})</option>`));
+        parts.push('</optgroup>');
+    }
+    parts.push('<optgroup label="Tüm ülkeler">');
+    parts.push(...allCountries().map((c) => `<option value="code:${c.code}">${flagEmoji(c.code)} ${escapeHtml(c.name)} (${escapeHtml(c.code)})</option>`));
+    parts.push('</optgroup>');
+    parts.push('<option value="__new__">＋ Elle ülke ekle…</option>');
+    sel.innerHTML = parts.join('');
     const wrap = document.getElementById(selectId === 'addServerCountry' ? 'addServerNewCountry' : 'installServerNewCountry');
     if (wrap) wrap.style.display = 'none';
 }
@@ -390,13 +714,24 @@ function populateCountrySelect(selectId) {
 // country_id, OR a new country_name(+code), OR nothing (auto-infer).
 function serverFormData(form) {
     const d = formData(form);
-    if (d.country_id === '__new__') {
-        delete d.country_id;
+    // The country <select> value is one of: '' (auto), 'id:<n>' (existing),
+    // 'code:<XX>' (pick from the full list), or '__new__' (manual inputs).
+    const cv = d.country_id;
+    delete d.country_id;
+    if (cv === '__new__') {
         if (!d.country_name || !d.country_name.trim()) { delete d.country_name; delete d.country_code; }
+    } else if (cv && cv.startsWith('id:')) {
+        d.country_id = cv.slice(3);
+        delete d.country_name; delete d.country_code;
+    } else if (cv && cv.startsWith('code:')) {
+        const code = cv.slice(5);
+        d.country_code = code;
+        d.country_name = countryNameForCode(code);
     } else {
         delete d.country_name; delete d.country_code;
-        if (!d.country_id) delete d.country_id;
     }
+    if (!d.app_id) delete d.app_id;
+    // auto_publish / create_defaults are present (value 'true') only when ticked.
     return d;
 }
 
@@ -501,13 +836,55 @@ document.body.addEventListener('click', async (e) => {
         else if (action === 'terminal') { openTerminal(id); }
         else if (action === 'reboot-server') { if (confirm('Sunucuyu yeniden başlat?')) await api(`/servers/${id}/reboot`, { method: 'POST' }); }
         else if (action === 'delete-server') { if (confirm('Sunucuyu sil?')) { await api(`/servers/${id}`, { method: 'DELETE' }); await loadAll({ silent: true }); } }
-        else if (action === 'sync-users') { await api(`/servers/${id}/users/sync-defaults`, { method: 'POST', body: JSON.stringify({ remote: true }) }); await loadAll({ silent: true }); }
+        else if (action === 'sync-users') { target.disabled = true; await api(`/servers/${id}/users/sync-defaults`, { method: 'POST', body: JSON.stringify({ remote: true }) }); await loadAll({ silent: true }); }
+        else if (action === 'sync-users-now') { target.disabled = true; const r = await api(`/servers/${id}/users/sync`, { method: 'POST' }); await loadAll({ silent: true }); if (r && r.error) alert(`Senkronizasyon uyarısı: ${r.error}`); }
+        else if (action === 'add-user') { openUserModal(id, null); }
+        else if (action === 'edit-user') { const u = state.users.find((x) => x.id === id); if (u) openUserModal(Number(target.dataset.server), u); }
+        else if (action === 'toggle-user') {
+            const serverId = Number(target.dataset.server);
+            const enabled = target.dataset.enabled === '1';
+            await api(`/servers/${serverId}/users/${id}`, { method: 'PUT', body: JSON.stringify({ enabled: !enabled }) });
+            await loadAll({ silent: true });
+        }
+        else if (action === 'delete-user') {
+            const msg = target.dataset.imported
+                ? 'Bu kullanıcı içe aktarılmış — sadece panelden kaldırılır, sunucudaki gerçek kullanıcıya dokunulmaz. Devam?'
+                : 'Kullanıcıyı sil? Bu kullanıcı sunucudan ve katalogdan kaldırılacak.';
+            if (!confirm(msg)) return;
+            await api(`/servers/${Number(target.dataset.server)}/users/${id}`, { method: 'DELETE' });
+            await loadAll({ silent: true });
+        }
+        else if (action === 'import-users') { target.disabled = true; const r = await api(`/servers/${id}/import-users`, { method: 'POST' }); await loadAll({ silent: true }); alert(`${r.imported || 0} yeni kullanıcı içe aktarıldı (${r.total || 0} canlı kullanıcı).`); }
+        else if (action === 'adopt-user') { openAdoptModal(Number(target.dataset.server)); }
+        else if (action === 'edit-catalog') { const it = state.catalog.find((c) => c.id === id); if (it) openCatalogEditModal(it); }
+        else if (action === 'copy-config') {
+            const cfg = target.dataset.config || '';
+            if (!cfg) { alert('Config yok'); return; }
+            try { await navigator.clipboard.writeText(cfg); target.innerHTML = '<i class="ri-check-line"></i>'; setTimeout(() => { target.innerHTML = '<i class="ri-file-copy-line"></i>'; }, 1200); }
+            catch (_) { prompt('Config (kopyalayın):', cfg); }
+        }
         else if (action === 'toggle-catalog') {
             const item = state.catalog.find((c) => c.id === id);
             await api(`/catalog/${id}`, { method: 'PUT', body: JSON.stringify({ status: item.status === 'active' ? 'draft' : 'active' }) });
             await loadAll({ silent: true });
         }
         else if (action === 'delete-catalog') { if (confirm('Config\'i sil?')) { await api(`/catalog/${id}`, { method: 'DELETE' }); await loadAll({ silent: true }); } }
+        else if (action === 'test-config') {
+            target.disabled = true; target.innerHTML = '<i class="ri-loader-4-line"></i>';
+            try { const r = await api(`/catalog/${id}/test`, { method: 'POST' }); await loadAll({ silent: true });
+                alert(r.result && r.result.ok ? `Config çalışıyor ✅  (${r.result.latencyMs} ms)` : `Config başarısız ❌\n${(r.result && r.result.error) || ''}`);
+            } catch (e) { alert(e.message); await loadAll({ silent: true }); }
+        }
+        else if (action === 'test-all-configs') { target.disabled = true; await api('/configs/test-all', { method: 'POST' }); alert('Tüm configler test ediliyor — birkaç dakika sürebilir, sonuçlar otomatik güncellenir.'); setTimeout(() => loadAll({ silent: true }), 4000); }
+        else if (action === 'delete-country') {
+            const c = state.countries.find((x) => x.id === id);
+            const configs = state.catalog.filter((i) => i.country_id === id).length;
+            const servers = state.servers.filter((s) => s.country_id === id).length;
+            if (configs > 0 || servers > 0) { alert(`Bu ülkede ${servers} sunucu, ${configs} config var. Önce onları silin/taşıyın.`); return; }
+            if (!confirm(`"${c ? c.name : 'Ülke'}" silinsin mi?`)) return;
+            await api(`/countries/${id}`, { method: 'DELETE' });
+            await loadAll({ silent: true });
+        }
         else if (action === 'select-app' || action === 'app-catalog') { await loadAppCatalog(id); }
         else if (action === 'rotate-app') {
             if (!confirm('Anahtarı döndür? Eski key/secret hemen geçersiz olur.')) return;
@@ -560,5 +937,14 @@ provisionSocket.on('provision:update', (job) => {
     renderServers();
 });
 
+function activePage() {
+    const el = document.querySelector('.page.active');
+    return el ? el.id.replace('page-', '') : 'overview';
+}
+
 loadAll();
-setInterval(() => loadAll({ silent: true }), 15000);
+loadOverview();
+setInterval(() => {
+    loadAll({ silent: true });
+    if (activePage() === 'overview') loadOverview();
+}, 15000);

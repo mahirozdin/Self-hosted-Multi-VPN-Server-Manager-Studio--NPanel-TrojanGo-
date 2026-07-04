@@ -5,6 +5,7 @@
   "main": "src/server.js",
   "scripts": {
     "start": "node src/server.js",
+    "dev": "node scripts/dev.js",
     "test": "node --test",
     "migrate": "node src/migrations/cli.js up",
     "migrate:status": "node src/migrations/cli.js pending",
@@ -29,6 +30,7 @@
     "google-auth-library": "^10.7.0",
     "mysql2": "^3.11.0",
     "node-cron": "^4.2.1",
+    "nodemailer": "^9.0.3",
     "sequelize": "^6.37.7",
     "socket.io": "^4.8.3",
     "socket.io-client": "^4.8.3",

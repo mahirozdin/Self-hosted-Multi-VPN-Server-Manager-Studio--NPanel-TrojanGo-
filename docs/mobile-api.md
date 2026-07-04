@@ -24,7 +24,9 @@ Unknown/disabled `X-App-Key` → `403`. Missing it → `400`.
 
 ### 1. `POST /v1/auth/challenge`
 Body: `{ "platform": "ios"|"android", "deviceId": "...", "appVersion": "2.0.0" }`
-Response: `{ "challenge": "<nonce>", "expiresIn": 300, "attestationMode": "strict" }`
+Response: `{ "challenge": "<nonce>", "expiresIn": 300, "attestationMode": "strict", "minSupportedVersion": "2.2.2"|null, "serverTime": 1751500000000 }`
+- `serverTime` (epoch ms): client computes `offset = serverTime - localTime` and adds it to `X-Timestamp`, so skewed device clocks stay inside the ±2 min window.
+- `minSupportedVersion`: when set and greater than the running version, the app shows a blocking force-update dialog.
 
 ### 2. `POST /v1/auth/token`
 Body (iOS): `{ "platform":"ios","deviceId":"...","challenge":"<nonce>","firebaseUid":"<optional>","attestation": { "keyId":"<base64>", "attestationObject":"<base64 CBOR>" } }`

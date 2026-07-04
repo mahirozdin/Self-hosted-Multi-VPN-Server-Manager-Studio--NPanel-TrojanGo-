@@ -8,5 +8,7 @@ yarn-debug.log*
 yarn-error.log*
 .idea/
 .vscode/
+.claude/
 bin/
 obj/
+*.sqlite

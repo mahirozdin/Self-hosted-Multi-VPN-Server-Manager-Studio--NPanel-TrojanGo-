@@ -30,6 +30,15 @@ if (!fs.existsSync(envPath)) {
         '# Mobile API attestation: development (mock) or strict (App Attest / Play Integrity)',
         'MOBILE_ATTESTATION_MODE=development',
         '',
+        '# Email alerts (optional). Leave SMTP_HOST empty to disable email alerts.',
+        'SMTP_HOST=',
+        'SMTP_PORT=587',
+        'SMTP_SECURE=false',
+        'SMTP_USER=',
+        'SMTP_PASS=',
+        'SMTP_FROM=',
+        'ALERT_EMAIL_TO=',
+        '',
     ].join('\n');
     fs.writeFileSync(envPath, template);
     console.log('.env file created with default password: admin123 (set DB_* values before using MySQL)');
@@ -44,6 +53,7 @@ const app = express();
 // proxy hops so req.ip / X-Forwarded-For are honoured without being spoofable
 // (never `true`). CF-Connecting-IP is still the source of truth — see clientIpService.
 app.set('trust proxy', Number(process.env.TRUST_PROXY_HOPS || 1));
+app.disable('x-powered-by');
 const server = http.createServer(app);
 const io = new Server(server);
 
@@ -54,6 +64,13 @@ const corsOptions = process.env.ADMIN_ORIGIN
   ? { origin: process.env.ADMIN_ORIGIN.split(',').map((o) => o.trim()) }
   : {};
 app.use(cors(corsOptions));
+// Baseline hardening headers (admin UI + API alike).
+app.use((req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('Referrer-Policy', 'no-referrer');
+  next();
+});
 app.use(bodyParser.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
@@ -116,6 +133,33 @@ async function start() {
     connectionLogService.purgeOldConnectionLogs(CONNECTION_LOG_RETENTION_DAYS)
       .catch((err) => console.error('Connection log purge failed:', err.message));
   });
+
+  // Health monitor: TLS liveness + SSH reachability + incident/alert bookkeeping.
+  cron.schedule('*/3 * * * *', () => {
+    monitorService.runHealthPass().catch((err) => console.error('Health pass failed:', err.message));
+  });
+
+  // Reconcile managed trojan-go users (persistence after restarts) + pull live
+  // traffic counters back onto the panel.
+  cron.schedule('*/15 * * * *', () => {
+    monitorService.runUserSyncPass().catch((err) => console.error('User sync pass failed:', err.message));
+  });
+
+  // Certificate auto-renewal: renew certs nearing expiry, alert on failure.
+  cron.schedule('45 3 * * *', () => {
+    monitorService.runCertRenewalPass().catch((err) => console.error('Cert renewal pass failed:', err.message));
+  });
+
+  // Hourly: functionally test every published config over a real trojan tunnel;
+  // alert per-config the moment one fails.
+  cron.schedule('20 * * * *', () => {
+    monitorService.runConfigTestPass().catch((err) => console.error('Config test pass failed:', err.message));
+  });
+
+  // Kick an initial health pass shortly after boot so the panel isn't blank.
+  setTimeout(() => {
+    monitorService.runHealthPass().catch((err) => console.error('Initial health pass failed:', err.message));
+  }, 5000);
 }
 
 start().catch((error) => {

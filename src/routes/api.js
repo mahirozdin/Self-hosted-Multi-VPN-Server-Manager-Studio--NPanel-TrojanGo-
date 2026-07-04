@@ -15,10 +15,13 @@ const {
     VpnCatalogItem,
     ApiDevice,
     BanRule,
+    MonitorIncident,
 } = require('../models/Database');
 const sshService = require('../services/sshService');
 const monitorService = require('../services/monitorService');
 const provisionService = require('../services/provisionService');
+const settingsService = require('../services/settingsService');
+const notificationService = require('../services/notificationService');
 const {
     adminAuthMiddleware,
     createAdminToken,
@@ -36,12 +39,20 @@ const {
     ensureDefaultCatalog,
     serializeUser,
     syncDefaultUsers,
+    pushUsersToServer,
+    importLiveUsers,
+    adoptConfig,
+    createUser,
+    updateUser,
+    deleteUser,
+    flagForCode,
 } = require('../services/npanelUserService');
 const {
     resolveAppMiddleware,
     generateAppCredentials,
 } = require('../services/tenantService');
 const { serializeConfig } = require('../services/catalogSerializer');
+const { englishName } = require('../services/countryNames');
 const connectionLogService = require('../services/connectionLogService');
 const banService = require('../services/banService');
 const { getClientIp, cloudflareGuardMiddleware } = require('./../services/clientIpService');
@@ -55,6 +66,22 @@ function sanitizeServer(server) {
 
 function sanitizeServers(servers) {
     return servers.map(sanitizeServer);
+}
+
+const { publishServerCatalog } = require('../services/catalogPublishService');
+
+// After adding a server: optionally import its existing live users (only when the
+// admin ticked "import existing"), push any managed defaults we created, and
+// refresh status — all in the background so the HTTP response stays fast.
+function importAndSyncInBackground(serverId, { doImport = false } = {}) {
+    (async () => {
+        const server = await Server.findByPk(serverId);
+        if (!server) return;
+        if (doImport) await importLiveUsers(server).catch((e) => console.error('bg import:', e.message));
+        const managed = await NpanelUser.findAll({ where: { server_id: server.id, source: 'managed' } });
+        if (managed.length) await pushUsersToServer(server, managed).catch((e) => console.error('bg push:', e.message));
+        await monitorService.updateServerStatus(server).catch((e) => console.error('bg status:', e.message));
+    })().catch((e) => console.error('importAndSyncInBackground failed:', e.message));
 }
 
 function getIo(req) {
@@ -177,7 +204,7 @@ router.get('/v1/countries', mobileRateLimitMiddleware, mobileAuthMiddleware, asy
     });
     await audit(req, 200, 'countries');
     res.json({
-        countries: countries.map((c) => ({ name: c.name, code: c.code, flag: c.flag })),
+        countries: countries.map((c) => ({ name: englishName(c.code, c.name), code: c.code, flag: c.flag })),
     });
 });
 
@@ -223,7 +250,10 @@ router.use(adminAuthMiddleware);
 
 router.get('/servers', async (req, res) => {
     try {
-        const servers = await Server.findAll();
+        const servers = await Server.findAll({
+            include: [{ model: Country, as: 'country' }],
+            order: [['name', 'ASC']],
+        });
         res.json(sanitizeServers(servers));
     } catch (error) {
         res.status(500).json({ error: error.message });
@@ -232,7 +262,11 @@ router.get('/servers', async (req, res) => {
 
 router.post('/servers', async (req, res) => {
     try {
-        const { name, ip, port, vpn_port, username, password, domain, trojan_config, country_id, country_name, country_code } = req.body;
+        const { name, ip, port, vpn_port, username, password, domain, trojan_config, country_id, country_name, country_code, auto_publish, app_id, create_defaults, import_existing } = req.body;
+        const autoPublish = auto_publish === true || auto_publish === 'true';
+        // Import existing users only when asked; otherwise auto-create defaults.
+        const importExisting = import_existing === true || import_existing === 'true';
+        const createDefaults = create_defaults === true || create_defaults === 'true';
         const server = await Server.create({
             name,
             ip,
@@ -243,6 +277,7 @@ router.post('/servers', async (req, res) => {
             domain,
             trojan_config,
             status: 'online',
+            auto_publish: autoPublish,
         });
 
         const { country, group } = await ensureCountryAndGroupForServer(server, {
@@ -250,9 +285,18 @@ router.post('/servers', async (req, res) => {
             countryName: country_name,
             countryCode: country_code,
         });
-        const users = await syncDefaultUsers(server, { remote: false });
-        await ensureDefaultCatalog(server, users, country.id, group.id);
-        monitorService.updateServerStatus(server);
+
+        if (createDefaults) {
+            // Create managed Free/Premium rows fast (no SSH); the box push happens
+            // in the background pass below.
+            const users = await syncDefaultUsers(server, { remote: false });
+            await ensureDefaultCatalog(server, users, country.id, group.id, { activate: autoPublish });
+            if (autoPublish) {
+                await publishServerCatalog(server, { appId: app_id ? Number(app_id) : null, activate: true });
+            }
+        }
+        // Background: (optionally) import existing users + push managed defaults + status.
+        importAndSyncInBackground(server.id, { doImport: importExisting });
 
         res.status(201).json(sanitizeServer(server));
     } catch (error) {
@@ -311,7 +355,8 @@ router.post('/servers/:id/refresh', async (req, res) => {
 
 router.post('/install', async (req, res) => {
     try {
-        const { name, ip, port, vpn_port, username, password, domain, adminUser, adminPass, country_id, country_name, country_code } = req.body;
+        const { name, ip, port, vpn_port, username, password, domain, adminUser, adminPass, country_id, country_name, country_code, auto_publish, app_id } = req.body;
+        const autoPublish = auto_publish === true || auto_publish === 'true';
         const server = await Server.create({
             name,
             ip,
@@ -323,6 +368,7 @@ router.post('/install', async (req, res) => {
             admin_user: adminUser || 'Admin',
             admin_pass: adminPass || 'ChangeMe123!',
             status: 'installing',
+            auto_publish: autoPublish,
         });
 
         const job = await provisionService.createJob(server.id);
@@ -340,6 +386,7 @@ router.post('/install', async (req, res) => {
                     countryName: country_name,
                     countryCode: country_code,
                 },
+                publish: { autoPublish, appId: app_id ? Number(app_id) : null },
             },
             getIo(req),
         ).catch((err) => {
@@ -364,14 +411,19 @@ router.post('/servers/:id/renew-ssl', async (req, res) => {
             username: server.username,
             password: server.password,
             domain: server.domain,
-        })
-            .then(() => server.update({
-                status: 'online',
-                last_ssl_renew: new Date(),
-                ssl_expiry: new Date(Date.now() + 90 * 24 * 60 * 60 * 1000),
-            }))
-            .catch((err) => {
-                server.update({ status: 'error' });
+        }, { force: true })
+            .then(async (newExpiry) => {
+                await server.update({
+                    status: 'online',
+                    last_ssl_renew: new Date(),
+                    ssl_expiry: newExpiry || server.ssl_expiry,
+                });
+                await monitorService.resolveIncidents(server, 'cert');
+                await monitorService.updateServerStatus(server);
+            })
+            .catch(async (err) => {
+                await server.update({ status: 'error' });
+                await monitorService.openIncident(server, 'cert', `Manual renewal failed: ${err.message}`, { alert: true });
                 console.error('SSL Renewal failed:', err);
             });
 
@@ -431,6 +483,132 @@ router.post('/servers/:id/users/sync-defaults', async (req, res) => {
     }
 });
 
+// Reconcile all of a server's users to the box + pull live traffic ("Sync now").
+router.post('/servers/:id/users/sync', async (req, res) => {
+    try {
+        const server = await Server.findByPk(req.params.id);
+        if (!server) return res.status(404).json({ error: 'Server not found' });
+        const result = await monitorService.syncUsersAndTraffic(server);
+        const users = await NpanelUser.findAll({ where: { server_id: server.id }, order: [['name', 'ASC']] });
+        res.json({ ok: result.ok !== false, error: result.error || null, users: users.map(serializeUser) });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// Import the server's existing live trojan-go users (visibility + traffic).
+router.post('/servers/:id/import-users', async (req, res) => {
+    try {
+        const server = await Server.findByPk(req.params.id);
+        if (!server) return res.status(404).json({ error: 'Server not found' });
+        const result = await importLiveUsers(server);
+        const users = await NpanelUser.findAll({ where: { server_id: server.id }, order: [['name', 'ASC']] });
+        res.json({ ...result, users: users.map(serializeUser) });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// Adopt a pasted working trojan:// config as a managed user (so the panel can
+// manage/serve it). Useful to make an imported user app-servable.
+router.post('/servers/:id/users/adopt', async (req, res) => {
+    try {
+        const server = await Server.findByPk(req.params.id);
+        if (!server) return res.status(404).json({ error: 'Server not found' });
+        if (!req.body.config) return res.status(400).json({ error: 'config required' });
+        const user = await adoptConfig(server, req.body);
+        res.status(201).json(serializeUser(user));
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// Create one user on a server.
+router.post('/servers/:id/users', async (req, res) => {
+    try {
+        const server = await Server.findByPk(req.params.id);
+        if (!server) return res.status(404).json({ error: 'Server not found' });
+        if (!req.body.name) return res.status(400).json({ error: 'name required' });
+        const user = await createUser(server, req.body);
+        res.status(201).json(serializeUser(user));
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// Update one user's limits / profile / password / enabled state.
+router.put('/servers/:id/users/:userId', async (req, res) => {
+    try {
+        const server = await Server.findByPk(req.params.id);
+        if (!server) return res.status(404).json({ error: 'Server not found' });
+        const user = await NpanelUser.findOne({ where: { id: req.params.userId, server_id: server.id } });
+        if (!user) return res.status(404).json({ error: 'User not found' });
+        await updateUser(server, user, req.body || {});
+        res.json(serializeUser(user));
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// Delete one user (removes it from the box + its catalog items).
+router.delete('/servers/:id/users/:userId', async (req, res) => {
+    try {
+        const server = await Server.findByPk(req.params.id);
+        if (!server) return res.status(404).json({ error: 'Server not found' });
+        const user = await NpanelUser.findOne({ where: { id: req.params.userId, server_id: server.id } });
+        if (!user) return res.status(404).json({ error: 'User not found' });
+        await deleteUser(server, user);
+        res.json({ message: 'User deleted' });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// Publish a server's configs to the mobile API (activate + assign to an app).
+router.post('/servers/:id/publish', async (req, res) => {
+    try {
+        const server = await Server.findByPk(req.params.id);
+        if (!server) return res.status(404).json({ error: 'Server not found' });
+        const appId = req.body.app_id != null && req.body.app_id !== ''
+            ? Number(req.body.app_id)
+            : (req.body.activate_only ? false : null);
+        const result = await publishServerCatalog(server, { appId, activate: req.body.activate !== false });
+        if (req.body.remember) await server.update({ auto_publish: true });
+        res.json({ ok: true, published: result.items.length, appId: result.appId });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// Read the real TLS cert expiry from the box and store it.
+router.post('/servers/:id/cert-refresh', async (req, res) => {
+    try {
+        const server = await Server.findByPk(req.params.id);
+        if (!server) return res.status(404).json({ error: 'Server not found' });
+        const expiry = await sshService.readCertExpiry({
+            ip: server.ip, port: server.port, username: server.username, password: server.password, domain: server.domain,
+        });
+        if (expiry) await server.update({ ssl_expiry: expiry });
+        res.json({ ok: true, ssl_expiry: expiry });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// Incident history for a server.
+router.get('/servers/:id/incidents', async (req, res) => {
+    try {
+        const incidents = await MonitorIncident.findAll({
+            where: { server_id: req.params.id },
+            order: [['started_at', 'DESC']],
+            limit: 50,
+        });
+        res.json(incidents);
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
 router.get('/provision-jobs', async (req, res) => {
     const jobs = await ProvisionJob.findAll({
         include: [
@@ -473,10 +651,13 @@ router.get('/management-tree', async (req, res) => {
 
 router.post('/countries', async (req, res) => {
     try {
+        const code = req.body.code || 'XX';
         const country = await Country.create({
             name: req.body.name,
-            code: req.body.code || 'XX',
-            flag: req.body.flag || req.body.code || 'XX',
+            code,
+            // The mobile app renders this as an image URL — default to the same
+            // flagcdn URL auto-created countries get instead of a bare code.
+            flag: req.body.flag || flagForCode(code),
             sort_order: req.body.sort_order || 0,
         });
         res.status(201).json(country);
@@ -490,6 +671,27 @@ router.put('/countries/:id', async (req, res) => {
     if (!country) return res.status(404).json({ error: 'Country not found' });
     await country.update(req.body);
     res.json(country);
+});
+
+// Delete a country — only when nothing depends on it (no servers, no configs),
+// so we never orphan a linked server or catalog item. Its empty groups go too.
+router.delete('/countries/:id', async (req, res) => {
+    try {
+        const country = await Country.findByPk(req.params.id);
+        if (!country) return res.status(404).json({ error: 'Country not found' });
+        const [servers, configs] = await Promise.all([
+            Server.count({ where: { country_id: country.id } }),
+            VpnCatalogItem.count({ where: { country_id: country.id } }),
+        ]);
+        if (servers > 0 || configs > 0) {
+            return res.status(409).json({ error: `Bu ülkede ${servers} sunucu ve ${configs} config var. Önce onları silin/taşıyın.` });
+        }
+        await ServerGroup.destroy({ where: { country_id: country.id } });
+        await country.destroy();
+        res.json({ message: 'Country deleted' });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
 });
 
 router.post('/groups', async (req, res) => {
@@ -563,6 +765,26 @@ router.delete('/catalog/:id', async (req, res) => {
     if (!item) return res.status(404).json({ error: 'Catalog item not found' });
     await item.destroy();
     res.json({ message: 'Catalog item deleted' });
+});
+
+// Real-tunnel test of one config now (panel "test now" button).
+router.post('/catalog/:id/test', async (req, res) => {
+    try {
+        const item = await VpnCatalogItem.findByPk(req.params.id, { include: [{ model: Server, as: 'server' }] });
+        if (!item) return res.status(404).json({ error: 'Catalog item not found' });
+        if (!item.server) return res.status(400).json({ error: 'Config has no server' });
+        const result = await monitorService.testSingleConfig(item, item.server);
+        await item.reload();
+        res.json({ result, item });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// Kick a full config test pass in the background.
+router.post('/configs/test-all', async (req, res) => {
+    monitorService.runConfigTestPass().catch((err) => console.error('Config test pass failed:', err.message));
+    res.json({ message: 'Config test pass started' });
 });
 
 // ---- Apps (tenants) ----
@@ -751,6 +973,88 @@ router.delete('/bans/:id', async (req, res) => {
     await ban.destroy();
     banService.invalidate();
     res.json({ message: 'Ban removed' });
+});
+
+// ---- Settings (panel-editable operational config) ----
+router.get('/settings', async (req, res) => {
+    try {
+        const settings = await settingsService.getAll();
+        res.json({ settings, smtp: { configured: notificationService.isConfigured() } });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+router.put('/settings', async (req, res) => {
+    try {
+        const settings = await settingsService.setMany(req.body || {});
+        res.json({ settings });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+router.post('/settings/test-email', async (req, res) => {
+    try {
+        const result = await notificationService.sendTest(req.body?.to);
+        res.json(result);
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// ---- Incidents (health history / alerts) ----
+router.get('/incidents', async (req, res) => {
+    try {
+        const where = {};
+        if (req.query.status) where.status = req.query.status;
+        const incidents = await MonitorIncident.findAll({
+            where,
+            include: [{ model: Server, as: 'server', attributes: ['id', 'name', 'ip', 'domain'] }],
+            order: [['started_at', 'DESC']],
+            limit: Math.min(Number(req.query.limit) || 100, 200),
+        });
+        res.json(incidents);
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// ---- Dashboard overview (health + cert + counts) ----
+router.get('/overview', async (req, res) => {
+    try {
+        const servers = await Server.findAll({ include: [{ model: Country, as: 'country' }] });
+        const now = Date.now();
+        const soonMs = 21 * 24 * 60 * 60 * 1000;
+        const summary = {
+            servers: { total: servers.length, online: 0, degraded: 0, offline: 0, unknown: 0 },
+            certsExpiringSoon: [],
+            openIncidents: 0,
+            countries: new Set(),
+            users: await NpanelUser.count(),
+            activeConfigs: await VpnCatalogItem.count({ where: { status: 'active' } }),
+        };
+        for (const s of servers) {
+            const h = s.health_status || 'unknown';
+            summary.servers[h] = (summary.servers[h] || 0) + 1;
+            if (s.country_id) summary.countries.add(s.country_id);
+            if (s.ssl_expiry) {
+                const left = new Date(s.ssl_expiry).getTime() - now;
+                if (left < soonMs) {
+                    summary.certsExpiringSoon.push({
+                        id: s.id, name: s.name, domain: s.domain, ssl_expiry: s.ssl_expiry,
+                        daysLeft: Math.floor(left / (24 * 60 * 60 * 1000)),
+                    });
+                }
+            }
+        }
+        summary.countryCount = summary.countries.size;
+        delete summary.countries;
+        summary.openIncidents = await MonitorIncident.count({ where: { status: 'open' } });
+        res.json(summary);
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
 });
 
 module.exports = router;

@@ -95,6 +95,46 @@ const Server = sequelize.define('Server', {
     type: DataTypes.TEXT,
     allowNull: true,
   },
+  // Country this node belongs to (drives the country-grouped panel + mobile
+  // catalog). Nullable for legacy rows; set on add/install.
+  country_id: {
+    type: DataTypes.INTEGER,
+    allowNull: true,
+  },
+  // localhost address of the trojan-go gRPC API on the box (NPanel default 2061).
+  // We manage users through it over SSH — see services/trojanApiService.js.
+  trojan_api_addr: {
+    type: DataTypes.STRING,
+    defaultValue: '127.0.0.1:2061',
+  },
+  // Path to the on-box trojan-go binary (auto-detected; NPanel: /opt/Npanel/linux/trojan-go).
+  trojan_binary_path: {
+    type: DataTypes.STRING,
+    allowNull: true,
+  },
+  // Combined health verdict from the monitor: online | degraded | offline | unknown.
+  health_status: {
+    type: DataTypes.STRING,
+    defaultValue: 'unknown',
+  },
+  last_health_ok_at: {
+    type: DataTypes.DATE,
+    allowNull: true,
+  },
+  last_incident_at: {
+    type: DataTypes.DATE,
+    allowNull: true,
+  },
+  last_alert_at: {
+    type: DataTypes.DATE,
+    allowNull: true,
+  },
+  // When true, this server's configs are auto-activated + assigned to the
+  // default app on provision so they surface in the mobile API with no clicks.
+  auto_publish: {
+    type: DataTypes.BOOLEAN,
+    defaultValue: false,
+  },
 });
 
 const ProvisionJob = sequelize.define('ProvisionJob', {
@@ -237,6 +277,41 @@ const NpanelUser = sequelize.define('NpanelUser', {
     type: DataTypes.DATE,
     allowNull: true,
   },
+  // Live counters pulled from the trojan-go API (bytes; BIGINT — traffic can
+  // exceed 2^31). speed_*_current is the instantaneous rate in bytes/sec.
+  traffic_up: {
+    type: DataTypes.BIGINT,
+    defaultValue: 0,
+  },
+  traffic_down: {
+    type: DataTypes.BIGINT,
+    defaultValue: 0,
+  },
+  speed_up_current: {
+    type: DataTypes.INTEGER,
+    defaultValue: 0,
+  },
+  speed_down_current: {
+    type: DataTypes.INTEGER,
+    defaultValue: 0,
+  },
+  live_synced_at: {
+    type: DataTypes.DATE,
+    allowNull: true,
+  },
+  // hex(SHA224(password)) — the trojan-go user identity. Cached so we can
+  // correlate live API stats and target modify/delete without the password.
+  remote_hash: {
+    type: DataTypes.STRING,
+    allowNull: true,
+  },
+  // 'managed' = we own the password (can push + build a config);
+  // 'imported' = discovered on the server's live trojan-go set (hash + traffic
+  // only, no recoverable password → no config, never pushed).
+  source: {
+    type: DataTypes.STRING,
+    defaultValue: 'managed',
+  },
 });
 
 const Country = sequelize.define('Country', {
@@ -335,6 +410,15 @@ const VpnCatalogItem = sequelize.define('VpnCatalogItem', {
     type: DataTypes.INTEGER,
     defaultValue: 0,
   },
+  // Real-tunnel health test results (does the published config actually work).
+  last_test_at: { type: DataTypes.DATE, allowNull: true },
+  last_test_ok: { type: DataTypes.BOOLEAN, allowNull: true },
+  last_test_error: { type: DataTypes.TEXT, allowNull: true },
+  test_latency: { type: DataTypes.INTEGER, allowNull: true }, // last measured ms
+  latency_avg: { type: DataTypes.INTEGER, allowNull: true },
+  latency_min: { type: DataTypes.INTEGER, allowNull: true },
+  latency_max: { type: DataTypes.INTEGER, allowNull: true },
+  test_samples: { type: DataTypes.TEXT, allowNull: true }, // JSON [{ok, ms, at}] last 10
 });
 
 // Tenant: each mobile VPN app served by this backend is one App.
@@ -594,6 +678,41 @@ VpnCatalogItem.belongsToMany(App, { through: AppCatalogItem, foreignKey: 'catalo
 App.hasMany(ApiDevice, { foreignKey: 'app_id', as: 'devices' });
 ApiDevice.belongsTo(App, { foreignKey: 'app_id', as: 'app' });
 
+// Panel-editable operational config (non-secret): alert recipient, default user
+// limits, default app for auto-publish, monitor thresholds. SMTP creds stay in
+// env. Read/written through services/settingsService.js.
+const Setting = sequelize.define('Setting', {
+  key: { type: DataTypes.STRING, allowNull: false, unique: true },
+  value: { type: DataTypes.TEXT, allowNull: true },
+}, {
+  indexes: [
+    { unique: true, fields: ['key'], name: 'settings_key' },
+  ],
+});
+
+// Health incident: one open row per (server, kind) while a check is failing,
+// resolved when it recovers. Drives alert de-dup and the health history view.
+const MonitorIncident = sequelize.define('MonitorIncident', {
+  server_id: { type: DataTypes.INTEGER, allowNull: false },
+  kind: { type: DataTypes.STRING, allowNull: false }, // vpn | ssh | trojan | cert | config
+  catalog_item_id: { type: DataTypes.INTEGER, allowNull: true }, // set for kind='config'
+  status: { type: DataTypes.STRING, defaultValue: 'open' }, // open | resolved
+  message: { type: DataTypes.TEXT, allowNull: true },
+  started_at: { type: DataTypes.DATE, allowNull: false },
+  resolved_at: { type: DataTypes.DATE, allowNull: true },
+  notified: { type: DataTypes.BOOLEAN, defaultValue: false },
+}, {
+  indexes: [
+    { fields: ['server_id', 'kind', 'status'], name: 'incidents_server_kind_status' },
+    { fields: ['status'], name: 'incidents_status' },
+  ],
+});
+
+Country.hasMany(Server, { foreignKey: 'country_id', as: 'servers' });
+Server.belongsTo(Country, { foreignKey: 'country_id', as: 'country' });
+Server.hasMany(MonitorIncident, { foreignKey: 'server_id', as: 'incidents' });
+MonitorIncident.belongsTo(Server, { foreignKey: 'server_id', as: 'server' });
+
 // Ban rules: type ip|device_id|firebase_uid, value, optional reason.
 // app_id null = global (all apps); set = that app only.
 const BanRule = sequelize.define('BanRule', {
@@ -625,4 +744,6 @@ module.exports = {
   ApiNonce,
   ApiAuditLog,
   ConnectionLog,
+  Setting,
+  MonitorIncident,
 };

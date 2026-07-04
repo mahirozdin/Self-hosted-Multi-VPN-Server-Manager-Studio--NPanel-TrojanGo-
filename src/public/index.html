@@ -14,22 +14,55 @@
         <header class="topbar">
             <div class="brand"><i class="ri-shield-keyhole-line"></i> NPanel Manager</div>
             <nav class="nav">
-                <button class="nav-tab active" data-page="servers"><i class="ri-server-line"></i> Servers</button>
-                <button class="nav-tab" data-page="vpn"><i class="ri-global-line"></i> VPN list</button>
-                <button class="nav-tab" data-page="apps"><i class="ri-apps-2-line"></i> Apps</button>
-                <button class="nav-tab" data-page="logs"><i class="ri-file-list-3-line"></i> Logs</button>
+                <button class="nav-tab active" data-page="overview"><i class="ri-dashboard-3-line"></i> Genel bakış</button>
+                <button class="nav-tab" data-page="servers"><i class="ri-server-line"></i> Sunucular</button>
+                <button class="nav-tab" data-page="vpn"><i class="ri-global-line"></i> VPN listesi</button>
+                <button class="nav-tab" data-page="apps"><i class="ri-apps-2-line"></i> Uygulamalar</button>
+                <button class="nav-tab" data-page="logs"><i class="ri-file-list-3-line"></i> Loglar</button>
+                <button class="nav-tab" data-page="settings"><i class="ri-settings-3-line"></i> Ayarlar</button>
             </nav>
             <div class="topbar-actions">
                 <button id="logoutBtn" class="btn btn-ghost"><i class="ri-logout-box-r-line"></i></button>
             </div>
         </header>
 
-        <!-- ===== SERVERS ===== -->
-        <section id="page-servers" class="page active">
+        <!-- ===== OVERVIEW ===== -->
+        <section id="page-overview" class="page active">
             <div class="page-head">
                 <div>
-                    <h2>Servers</h2>
-                    <p>VPS host'ları — durum, kurulum, sertifika, kullanıcılar</p>
+                    <h2>Genel bakış</h2>
+                    <p>Sistem sağlığı, sertifikalar ve olaylar tek ekranda</p>
+                </div>
+                <div class="toolbar">
+                    <button id="overviewRefreshBtn" class="btn btn-secondary"><i class="ri-refresh-line"></i> Yenile</button>
+                </div>
+            </div>
+            <div class="metrics">
+                <div class="metric"><span>Sunucu</span><strong id="ovServers">0</strong></div>
+                <div class="metric ok"><span>Online</span><strong id="ovOnline">0</strong></div>
+                <div class="metric warn"><span>Kısmi (degraded)</span><strong id="ovDegraded">0</strong></div>
+                <div class="metric err"><span>Offline</span><strong id="ovOffline">0</strong></div>
+                <div class="metric"><span>Ülke</span><strong id="ovCountries">0</strong></div>
+                <div class="metric"><span>Aktif config</span><strong id="ovConfigs">0</strong></div>
+            </div>
+            <div class="grid-2">
+                <article class="card">
+                    <div class="subpanel-head"><h4>Açık olaylar</h4><span class="pill pill-error" id="ovIncidentCount">0</span></div>
+                    <div id="ovIncidents"></div>
+                </article>
+                <article class="card">
+                    <div class="subpanel-head"><h4>Sertifikası yaklaşanlar</h4></div>
+                    <div id="ovCerts"></div>
+                </article>
+            </div>
+        </section>
+
+        <!-- ===== SERVERS ===== -->
+        <section id="page-servers" class="page">
+            <div class="page-head">
+                <div>
+                    <h2>Sunucular</h2>
+                    <p>Ülkelere göre gruplu — durum, kullanıcılar, canlı trafik, sertifika</p>
                 </div>
                 <div class="toolbar">
                     <div class="search"><i class="ri-search-line"></i><input type="text" id="serverSearch" placeholder="Ara"></div>
@@ -55,6 +88,7 @@
                     <p>Uygulamalara giden katalog — ülkeler ve config'ler</p>
                 </div>
                 <div class="toolbar">
+                    <button id="testAllConfigsBtn" class="btn btn-secondary" data-action="test-all-configs"><i class="ri-pulse-line"></i> Tümünü test et</button>
                     <button id="addCountryBtn" class="btn btn-secondary"><i class="ri-flag-line"></i> Ülke ekle</button>
                     <button id="addConfigBtn" class="btn btn-primary"><i class="ri-add-line"></i> Config ekle</button>
                 </div>
@@ -127,6 +161,50 @@
                 <div id="bansResults"></div>
             </div>
         </section>
+
+        <!-- ===== SETTINGS ===== -->
+        <section id="page-settings" class="page">
+            <div class="page-head">
+                <div>
+                    <h2>Ayarlar</h2>
+                    <p>Uyarı e-postası, otomatik yayın, izleme ve sertifika politikaları</p>
+                </div>
+            </div>
+            <article class="card">
+                <div class="subpanel-head"><h4>E-posta uyarıları (SMTP)</h4><span id="smtpStatus" class="pill pill-unknown">bilinmiyor</span></div>
+                <p class="hint" style="margin-bottom:12px">SMTP bilgileri sunucu <code>.env</code> dosyasından okunur (SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, SMTP_FROM). Alıcı adresi aşağıdadır.</p>
+                <form id="settingsForm" class="form-grid">
+                    <label class="full-span">Uyarı alıcısı (e-posta)
+                        <input type="email" name="alert_email" placeholder="alerts@ornek.com">
+                    </label>
+                    <label>Varsayılan uygulama (otomatik yayın)
+                        <select name="default_app_id" id="settingsDefaultApp"><option value="">— seçili değil —</option></select>
+                    </label>
+                    <label>Sertifika yenileme eşiği (gün)
+                        <input type="number" name="ssl_renew_days" value="21" min="1" max="60">
+                    </label>
+                    <label>Free hız limiti (KiB/s, 0=limitsiz)
+                        <input type="number" name="free_speed_kib" value="4096" min="0">
+                    </label>
+                    <label>Premium hız limiti (KiB/s, 0=limitsiz)
+                        <input type="number" name="premium_speed_kib" value="0" min="0">
+                    </label>
+                    <label>Free IP limiti (0 = limitsiz)
+                        <input type="number" name="free_ip_limit" value="0" min="0">
+                    </label>
+                    <label>Config testi timeout (saniye)
+                        <input type="number" name="config_test_timeout" value="30" min="5" max="120">
+                    </label>
+                    <label class="switch-row"><input type="checkbox" name="monitor_enabled" value="true"> Sağlık izleme açık</label>
+                    <label class="switch-row"><input type="checkbox" name="auto_renew_ssl" value="true"> Otomatik sertifika yenileme açık</label>
+                    <label class="switch-row"><input type="checkbox" name="config_test_enabled" value="true"> Saatlik gerçek-tünel config testi açık</label>
+                    <div class="full-span" style="display:flex;gap:8px;flex-wrap:wrap">
+                        <button type="submit" class="btn btn-primary"><i class="ri-save-3-line"></i> Kaydet</button>
+                        <button type="button" id="testEmailBtn" class="btn btn-secondary"><i class="ri-mail-send-line"></i> Test e-postası gönder</button>
+                    </div>
+                </form>
+            </article>
+        </section>
     </div>
 
     <!-- ===== Modals ===== -->
@@ -142,6 +220,7 @@
         <div class="modal-content">
             <button class="close icon-btn"><i class="ri-close-line"></i></button>
             <h2>Mevcut sunucu ekle</h2>
+            <p class="hint" style="margin-bottom:14px">Varsayılan olarak varsayılan Free/Premium kullanıcıları otomatik oluşturulur. Sunucuda zaten kullanıcılar varsa "Eski configleri import et" seçeneğini işaretle (trafikleriyle görünür; şifreleri NPanel'de olduğu için config üretilemez).</p>
             <form id="addServerForm" class="form-grid">
                 <input type="text" name="name" placeholder="Sunucu adı" required>
                 <input type="text" name="ip" placeholder="IP adresi" required>
@@ -156,6 +235,10 @@
                     <input type="text" name="country_name" placeholder="Yeni ülke adı">
                     <input type="text" name="country_code" placeholder="ISO (AR)" maxlength="4">
                 </div>
+                <label class="switch-row full-span"><input type="checkbox" name="import_existing" value="true"> Eski configler varsa import edilsin mi?</label>
+                <label class="switch-row full-span"><input type="checkbox" name="auto_publish" value="true"> Eklenince mobil API'ye otomatik yayınla?</label>
+                <label class="switch-row full-span"><input type="checkbox" name="create_defaults" value="true" checked> Varsayılan kullanıcıları otomatik oluştur?</label>
+                <select name="app_id" id="addServerApp" class="full-span"><option value="">Uygulama: varsayılan (Ayarlar'dan)</option></select>
                 <button type="submit" class="btn btn-primary full-span">Sunucu ekle</button>
             </form>
         </div>
@@ -180,6 +263,8 @@
                     <input type="text" name="country_name" placeholder="Yeni ülke adı">
                     <input type="text" name="country_code" placeholder="ISO (AR)" maxlength="4">
                 </div>
+                <label class="switch-row full-span"><input type="checkbox" name="auto_publish" value="true" checked> Kurulum bitince mobil API'ye otomatik yayınla</label>
+                <select name="app_id" id="installServerApp" class="full-span"><option value="">Uygulama: varsayılan (Ayarlar'dan)</option></select>
                 <button type="submit" class="btn btn-primary full-span">Kurulumu başlat</button>
             </form>
         </div>
@@ -234,6 +319,56 @@
                 <input type="text" name="entry_ip" placeholder="Giriş IP override (opsiyonel, boş = sunucu IP)">
                 <input type="text" name="sni" placeholder="SNI override (opsiyonel)">
                 <button type="submit" class="btn btn-primary full-span">Katalog'a ekle</button>
+            </form>
+        </div>
+    </div>
+
+    <div id="userModal" class="modal">
+        <div class="modal-content">
+            <button class="close icon-btn"><i class="ri-close-line"></i></button>
+            <h2 id="userModalTitle">Kullanıcı ekle</h2>
+            <form id="userForm" class="form-grid">
+                <input type="text" name="name" placeholder="Kullanıcı adı" required>
+                <select name="profile_type" id="userProfileType">
+                    <option value="free">free</option>
+                    <option value="premium">premium</option>
+                </select>
+                <label>Upload limiti (KiB/s, 0=limitsiz)<input type="number" name="speed_upload" min="0" placeholder="4096"></label>
+                <label>Download limiti (KiB/s, 0=limitsiz)<input type="number" name="speed_download" min="0" placeholder="4096"></label>
+                <label>IP limiti (0=limitsiz)<input type="number" name="ip_limit" min="0" placeholder="0"></label>
+                <label>Şifre (boş = otomatik)<input type="text" name="password" placeholder="otomatik üretilir"></label>
+                <label class="switch-row full-span"><input type="checkbox" name="enabled" value="true" checked> Aktif</label>
+                <button type="submit" class="btn btn-primary full-span">Kaydet</button>
+            </form>
+        </div>
+    </div>
+
+    <div id="catalogEditModal" class="modal">
+        <div class="modal-content">
+            <button class="close icon-btn"><i class="ri-close-line"></i></button>
+            <h2>Config düzenle</h2>
+            <form id="catalogEditForm" class="form-grid">
+                <input type="text" name="display_name" placeholder="Görünen ad" class="full-span" required>
+                <select name="type" id="catalogEditType"><option value="free">free</option><option value="premium">premium</option></select>
+                <select name="status" id="catalogEditStatus"><option value="active">aktif (yayında)</option><option value="draft">taslak</option></select>
+                <input type="text" name="entry_ip" placeholder="Giriş IP override (boş = sunucu IP)">
+                <input type="text" name="sni" placeholder="SNI override (boş = domain)">
+                <textarea name="config" class="full-span" placeholder="Trojan config URI (boş = değişmez)"></textarea>
+                <button type="submit" class="btn btn-primary full-span">Kaydet</button>
+            </form>
+        </div>
+    </div>
+
+    <div id="adoptModal" class="modal">
+        <div class="modal-content">
+            <button class="close icon-btn"><i class="ri-close-line"></i></button>
+            <h2>Config ile yönet (adopt)</h2>
+            <p class="hint" style="margin-bottom:14px">İçe aktarılan kullanıcının çalışan trojan:// config'ini yapıştır. Panel şifreyi çıkarıp kullanıcıyı yönetebilir ve uygulamaya servis edebilir hale gelir.</p>
+            <form id="adoptForm" class="form-grid">
+                <input type="text" name="name" placeholder="Kullanıcı adı (opsiyonel)" class="full-span">
+                <select name="profile_type" class="full-span"><option value="free">free</option><option value="premium">premium</option></select>
+                <textarea name="config" class="full-span" placeholder="trojan://sifre@host:443?security=tls&type=ws&path=/fetch#Ad" required></textarea>
+                <button type="submit" class="btn btn-primary full-span">Adopt et</button>
             </form>
         </div>
     </div>

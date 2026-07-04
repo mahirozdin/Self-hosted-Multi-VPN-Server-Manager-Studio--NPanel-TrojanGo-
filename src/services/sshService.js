@@ -28,10 +28,10 @@ class SSHService {
       let stderr = '';
       // Wrap in bash for pipefail and safer execution
       const wrappedCommand = `/bin/bash -lc "set -euo pipefail; ${command.replace(/(["$\`\\])/g, '\\$1')}"`;
-      
+
       conn.exec(wrappedCommand, { pty: true }, (err, stream) => {
         if (err) return reject(err);
-        
+
         stream.on('close', (code, signal) => {
           if (code === 0) {
             resolve({ stdout, stderr });
@@ -40,16 +40,59 @@ class SSHService {
             reject(new Error(`Command failed with exit code ${code}: ${stderr || stdout}`));
           }
         });
-        
+
         stream.on('data', (data) => {
           stdout += data.toString();
         });
-        
+
         stream.stderr.on('data', (data) => {
           stderr += data.toString();
         });
       });
     });
+  }
+
+  // Raw exec on an open connection: no PTY (clean stdout), no pipefail wrapper,
+  // never throws on non-zero — returns { code, stdout, stderr } for the caller to
+  // inspect. Use for reads where a non-zero exit is expected/handled.
+  execRaw(conn, command) {
+    return new Promise((resolve, reject) => {
+      conn.exec(command, { pty: false }, (err, stream) => {
+        if (err) return reject(err);
+        let stdout = '';
+        let stderr = '';
+        stream.on('close', (code) => resolve({ code: code == null ? 0 : code, stdout, stderr }));
+        stream.on('data', (d) => { stdout += d.toString(); });
+        stream.stderr.on('data', (d) => { stderr += d.toString(); });
+      });
+    });
+  }
+
+  // Connect, run one raw command, disconnect. Convenience for one-off reads.
+  async runCommand(serverConfig, command) {
+    const conn = await this.connect(serverConfig);
+    try {
+      return await this.execRaw(conn, command);
+    } finally {
+      conn.end();
+    }
+  }
+
+  // Read the live TLS certificate's notAfter date from the box. Returns a Date or
+  // null (cert missing / parse failure). Domain drives the letsencrypt path.
+  async readCertExpiry(serverConfig) {
+    const domain = serverConfig.domain;
+    if (!domain) return null;
+    const cmd = `openssl x509 -enddate -noout -in /etc/letsencrypt/live/${domain}/fullchain.pem 2>/dev/null | cut -d= -f2`;
+    try {
+      const { stdout } = await this.runCommand(serverConfig, cmd);
+      const raw = String(stdout || '').trim();
+      if (!raw) return null;
+      const parsed = new Date(raw);
+      return Number.isNaN(parsed.getTime()) ? null : parsed;
+    } catch (_) {
+      return null;
+    }
   }
 
   async installNpanel(serverConfig,  options = {}) {
@@ -133,23 +176,37 @@ class SSHService {
      }
   }
 
-  async renewSSL(serverConfig) {
-      const conn = await this.connect(serverConfig);
-      try {
-          console.log(`Renewing SSL for ${serverConfig.domain} on ${serverConfig.ip}`);
-          await this.execCommand(conn, 'service npanel stop');
-          // certbot renew might be enough, but user specified full certonly logic or renew
-          // User said: "ssl yenileme islemi icinde "service npanel stop" yapilir ssl yenilemesi yapilir ... ve "service npanel start" diyerek npanel geri baslatirilir"
-          // We can use 'certbot renew' which is smarter, or force renewal.
-          // Let's stick to the safe bet of running the certbot command for the specific domain again or just renew.
-          // 'certbot renew' usually requires port 80 to be free if using standalone.
-          
-          await this.execCommand(conn, 'certbot renew --force-renewal'); // Force renewal to be safe/sure
-          await this.execCommand(conn, 'service npanel start');
-          return true;
-      } finally {
-          conn.end();
+  // Renew the TLS cert. certbot (standalone) needs port 80 free, so NPanel is
+  // stopped around the renewal and restarted after (even on failure). For the
+  // scheduled job pass force=false so Let's Encrypt only reissues when the cert
+  // is actually near expiry (avoids rate limits); the manual button forces.
+  // Returns the new cert expiry Date (or null).
+  async renewSSL(serverConfig, options = {}) {
+    const force = options.force === true;
+    const conn = await this.connect(serverConfig);
+    try {
+      console.log(`Renewing SSL for ${serverConfig.domain} on ${serverConfig.ip} (force=${force})`);
+      await this.execRaw(conn, 'service npanel stop || systemctl stop npanel || true');
+      const renewCmd = force
+        ? 'certbot renew --force-renewal --non-interactive'
+        : 'certbot renew --non-interactive';
+      const renew = await this.execRaw(conn, renewCmd);
+      // Always bring NPanel back up, even if certbot failed.
+      await this.execRaw(conn, 'service npanel start || systemctl start npanel || true');
+      if (renew.code !== 0) {
+        throw new Error(`certbot renew failed (code ${renew.code}): ${(renew.stderr || renew.stdout || '').trim().slice(0, 300)}`);
       }
+      // Report the actual post-renewal expiry.
+      const { stdout } = await this.execRaw(
+        conn,
+        `openssl x509 -enddate -noout -in /etc/letsencrypt/live/${serverConfig.domain}/fullchain.pem 2>/dev/null | cut -d= -f2`,
+      );
+      const raw = String(stdout || '').trim();
+      const parsed = raw ? new Date(raw) : null;
+      return parsed && !Number.isNaN(parsed.getTime()) ? parsed : null;
+    } finally {
+      conn.end();
+    }
   }
 
   async rebootServer(serverConfig) {

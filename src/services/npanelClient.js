@@ -1,8 +1,10 @@
-class NpanelClient {
-  constructor() {
-    this.protocolStatus = 'encrypted_protocol_adapter_missing';
-  }
+const trojanApiService = require('./trojanApiService');
 
+// Thin compatibility layer. The `buildCreateUserRequest` / `buildUpdateUserRequest`
+// helpers describe NPanel's own (encrypted, unpublished) request framing and are
+// kept for reference + unit tests. Real remote user sync is done through
+// trojan-go's open gRPC API — see services/trojanApiService.js.
+class NpanelClient {
   buildRequest(req, params = [], { token = '', key = 1 } = {}) {
     return {
       token,
@@ -35,18 +37,29 @@ class NpanelClient {
     ], options);
   }
 
+  // Reconcile one user on one server through the trojan-go API. Returns the shape
+  // npanelUserService expects: { ok, status, message, hash, stats }.
   async syncUser(server, user) {
-    const createPayload = this.buildCreateUserRequest(user, { key: 1 });
-    const updatePayload = this.buildUpdateUserRequest(user, { key: 2 });
-
+    const result = await trojanApiService.syncServerUsers(server, [user]);
+    const applied = (result.applied && result.applied[0]) || null;
+    if (!result.ok) {
+      return {
+        ok: false,
+        status: 'trojan_api_error',
+        message: result.error || 'trojan-go API sync failed',
+        serverId: server.id,
+        userName: user.name,
+      };
+    }
+    const failed = applied && applied.action === 'error';
     return {
-      ok: false,
-      status: this.protocolStatus,
-      message:
-        'NPanel create-user/update-user request payloads were prepared, but upstream cEnc/cDec AES binary framing is not published as source. Local desired state and configs were generated; remote creation requires a cipher adapter or manual NPanel sync.',
+      ok: !failed,
+      status: failed ? 'trojan_api_error' : 'synced',
+      message: failed ? applied.message : `trojan-go user ${applied ? applied.action : 'synced'}`,
       serverId: server.id,
       userName: user.name,
-      plannedRequests: [createPayload.req, updatePayload.req],
+      hash: applied ? applied.hash : trojanApiService.hash(user.password),
+      stats: applied ? applied.stats : null,
     };
   }
 }

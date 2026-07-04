@@ -16,6 +16,9 @@ const CHALLENGE_TTL_MS = 5 * 60 * 1000;
 const REQUEST_CLOCK_SKEW_MS = 2 * 60 * 1000;
 const RATE_LIMIT_WINDOW_MS = 60 * 1000;
 const RATE_LIMIT_MAX_REQUESTS = 90;
+// Per-IP cap across ALL device ids: without it a single IP could mint a fresh
+// ip+device bucket per request (rotating X-Device-Id) and flood /v1 unlimited.
+const RATE_LIMIT_IP_MAX_REQUESTS = 300;
 const rateLimitBuckets = new Map();
 
 function randomToken(size = 32) {
@@ -94,6 +97,9 @@ async function createChallenge({ app, platform, deviceId, appVersion }) {
     expiresIn: Math.floor(CHALLENGE_TTL_MS / 1000),
     attestationMode: process.env.MOBILE_ATTESTATION_MODE || 'development',
     minSupportedVersion: app ? (app.min_supported_version || null) : null,
+    // Client computes a clock offset from this so devices with a skewed clock
+    // can still produce X-Timestamp values inside the ±2 min window.
+    serverTime: Date.now(),
   };
 }
 
@@ -314,20 +320,27 @@ function mobileAuthMiddleware(req, res, next) {
     });
 }
 
-function mobileRateLimitMiddleware(req, res, next) {
-  const key = `${getClientIp(req)}:${req.headers['x-device-id'] || req.body?.deviceId || 'anonymous'}`;
-  const now = Date.now();
+function bumpBucket(key, now) {
   const bucket = rateLimitBuckets.get(key) || { count: 0, resetAt: now + RATE_LIMIT_WINDOW_MS };
-
   if (bucket.resetAt < now) {
     bucket.count = 0;
     bucket.resetAt = now + RATE_LIMIT_WINDOW_MS;
   }
-
   bucket.count += 1;
   rateLimitBuckets.set(key, bucket);
+  return bucket.count;
+}
 
-  if (bucket.count > RATE_LIMIT_MAX_REQUESTS) {
+function mobileRateLimitMiddleware(req, res, next) {
+  const ip = getClientIp(req);
+  const now = Date.now();
+  const deviceCount = bumpBucket(
+    `${ip}:${req.headers['x-device-id'] || req.body?.deviceId || 'anonymous'}`,
+    now,
+  );
+  const ipCount = bumpBucket(`ip:${ip}`, now);
+
+  if (deviceCount > RATE_LIMIT_MAX_REQUESTS || ipCount > RATE_LIMIT_IP_MAX_REQUESTS) {
     return res.status(429).json({ error: 'Rate limit exceeded' });
   }
 

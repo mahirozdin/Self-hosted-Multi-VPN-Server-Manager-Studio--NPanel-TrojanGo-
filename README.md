@@ -5,7 +5,7 @@
 
 A self-hosted control plane for a fleet of [NPanel](https://github.com/Leiren/Npanel) / Trojan-Go VPN nodes. It does two jobs from one codebase:
 
-- **Manager Studio** — a web admin panel to provision Ubuntu VPS boxes into TLS-secured Trojan-Go servers over SSH, then monitor, renew certificates, reboot, and open a live terminal to them.
+- **Manager Studio** — a web admin panel to provision Ubuntu VPS boxes into TLS-secured Trojan-Go servers over SSH, **manage their Trojan users** (create / limit / delete + live traffic sync through trojan-go's gRPC API), auto-renew certificates, functionally test every published config over a real tunnel, reboot, open a live terminal, and email you when something breaks.
 - **Mobile VPN backend** — a multi-tenant, attested, HMAC-signed `/v1` API that serves VPN configs to your iOS/Android apps, records connection logs for legal lookups, and enforces device/IP/account bans.
 
 The companion Flutter client lives in a separate repo and talks to the `/v1` API documented in [`docs/mobile-api.md`](docs/mobile-api.md).
@@ -88,12 +88,18 @@ All settings come from `.env` (a default file is generated on first boot if miss
 
 ## Admin panel
 
-Four tabs, each backed by the same REST API the panel itself calls:
+Backed by the same REST API the panel itself calls:
 
-- **Servers** — add a server you already run, or **Install** to provision a fresh VPS end-to-end over SSH (apt, dependencies, Certbot TLS, NPanel install, panel config, default users, health check) with live per-step progress. Per server: edit, refresh status, renew SSL, reboot, web terminal (xterm.js over Socket.IO), delete.
-- **VPN list** — catalog grouped by country. Toggle a config between `draft` and `active`, override entry IP / SNI, delete.
+- **Overview** — dashboard: server health (online / degraded / offline), certs expiring soon, open incidents, and catalog/user counts.
+- **Servers** — add a server you already run, or **Install** to provision a fresh VPS end-to-end over SSH (apt, dependencies, Certbot TLS, NPanel install, panel config, default users, health check) with live per-step progress. Per server: edit, refresh status, renew SSL, reboot, web terminal (xterm.js over Socket.IO), delete. Trojan users on the node can be created, limited (speed / traffic / device), password-rotated, imported, or deleted — every change is pushed to the box and live traffic is synced back.
+- **VPN list** — catalog grouped by country. Toggle a config between `draft` and `active`, override entry IP / SNI, run a real-tunnel test on demand, delete.
 - **Apps** — create app tenants (returns the `X-App-Key` + HMAC secret **once**), rotate keys, and tick which catalog items each app exposes.
 - **Logs** — search connection logs (by firebase UID / IP / device / date), browse registered devices, and manage IP / device / firebase-UID bans.
+- **Settings** — operational config + SMTP for email alerts (send a test mail from the panel).
+
+### Automation (background jobs)
+
+Once servers are online the backend keeps them healthy on its own: a health/TLS/SSH pass every few minutes (opening incidents + emailing on failure), certificate auto-renewal near expiry, managed-user reconciliation after restarts with live traffic pulled back onto the panel, and an hourly functional test of every published config over a real Trojan tunnel (alerting per-config the moment one stops working).
 
 ### Bringing a server online for an app
 
@@ -132,15 +138,17 @@ See [`docs/MIGRATION-GUIDE.md`](docs/MIGRATION-GUIDE.md) for the full go-live ch
 - **Secrets at rest** — SSH passwords, NPanel admin passwords, and per-app HMAC secrets are encrypted with `DB_ENCRYPTION_KEY`; sanitizers strip them from every API response.
 - **Connection logging** — each session records the real client IP, entry IP, device, and (if signed in) firebase UID, with server-computed duration, for court-order lookups. Retention is purged daily.
 - **Bans** — block by IP, device id, or firebase UID, globally or per app.
-- **Rate limiting** — 90 req/min per (real IP + device) on `/v1`, plus a brute-force guard on admin login.
+- **Rate limiting** — 90 req/min per (real IP + device) **and** a 300 req/min ceiling per real IP across all device ids (so rotating `X-Device-Id` can't bypass the cap) on `/v1`, plus a brute-force guard on admin login.
+- **Baseline headers** — `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`, and `X-Powered-By` disabled on every response.
+- **Clock-offset tolerant signing** — the challenge response includes `serverTime`; the client derives an offset so a skewed device clock still lands inside the 2-minute signature window instead of getting locked out.
 
 ---
 
 ## Known limitations
 
-- **Remote NPanel user provisioning is a stub.** `npanelClient.syncUser` prepares the create/update payloads but does **not** create the Trojan user on the node — NPanel's encrypted (cEnc/cDec) binary framing isn't published. In practice the Trojan password in a served config must already exist on the node (create it via the NPanel panel, or paste a known-working config). Closing this needs an NPanel protocol adapter.
+- **Remote user management goes through trojan-go's gRPC API over SSH.** Managed users are created / limited / deleted directly on the node via `trojanApiService` (the earlier NPanel-binary stub is gone; `npanelClient` is now just a reference/compat shim). This needs the trojan-go **API address reachable from the SSH session** (default `127.0.0.1:10000`) and the `trojan-go` binary on the box. Imported users have no recoverable password, so they're read-only (visibility + traffic) and never pushed.
 - **Single-instance state.** The rate-limit buckets and request nonces are in-memory / single-DB. Run one backend instance until this is moved to Redis for horizontal scale.
-- **iOS ATS not fully tightened.** The client still makes some cleartext calls (e.g. ip-api.com). Tighten `NSAllowsArbitraryLoads` and finalize cert pinning as a production hardening step.
+- **TLS cert pinning is optional and off by default.** The companion app supports SHA-256 leaf pinning but ships with an empty pin set (system trust only). Behind Cloudflare, leave it off (edge cert rotation would brick pinned builds); pin only when the app talks straight to the origin.
 
 ---
 
@@ -155,12 +163,21 @@ src/
   services/
     provisionService.js  SSH install pipeline (step-by-step)
     sshService.js        SSH exec / SSL renew / reboot
-    monitorService.js    Latency + SSH/health status
-    mobileSecurityService.js  Attestation, token issuance, request signing
+    trojanApiService.js  trojan-go gRPC API over SSH (add/limit/delete/list users, live traffic)
+    npanelUserService.js Managed users, default Free/Premium, config build, catalog sync
+    catalogPublishService.js  Publish a server's configs to an app tenant
+    monitorService.js    Health/TLS/SSH passes, incidents, user + config-test passes
+    configTestService.js Real-tunnel functional test of a published config
+    mobileSecurityService.js  Attestation, token issuance, request signing, rate limits
     catalogSerializer.js Catalog item → mobile config shape
     connectionLogService.js   Session logging + retention
     tenantService.js     X-App-Key tenant resolution
     banService.js        IP / device / UID ban enforcement
+    clientIpService.js   Cloudflare-aware real client IP + edge enforcement
+    settingsService.js   Panel-editable operational config
+    notificationService.js    SMTP email alerts
+    countryNames.js      ISO code → canonical English country name + flag URL
+    attestation/         iOS App Attest + Android Play Integrity verifiers
   public/                Admin panel (vanilla JS + xterm.js)
 docs/
   mobile-api.md          The /v1 contract

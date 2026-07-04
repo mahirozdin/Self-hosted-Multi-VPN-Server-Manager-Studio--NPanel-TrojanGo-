@@ -10,6 +10,7 @@ const {
   ensureDefaultCatalog,
   syncDefaultUsers,
 } = require('./npanelUserService');
+const { publishServerCatalog } = require('./catalogPublishService');
 
 const STEP_DEFINITIONS = [
   ['ssh_connect', 'SSH connection'],
@@ -219,11 +220,16 @@ async function runInstall(serverId, serverConfig, options = {}, io = null) {
     ));
 
     const users = await runStep(io, job, 'user_sync', async () => {
+      const autoPublish = options.publish && options.publish.autoPublish === true;
+      // Create the users on the box via the trojan-go API, then wire the catalog.
       const desiredUsers = await syncDefaultUsers(server, { remote: true });
       const { country, group } = await ensureCountryAndGroupForServer(server, options.country || {});
-      await ensureDefaultCatalog(server, desiredUsers, country.id, group.id);
+      await ensureDefaultCatalog(server, desiredUsers, country.id, group.id, { activate: autoPublish });
+      if (autoPublish) {
+        await publishServerCatalog(server, { appId: options.publish.appId != null ? options.publish.appId : null, activate: true });
+      }
       return {
-        stdout: `Prepared ${desiredUsers.length} default users. Remote status: ${desiredUsers.map((user) => `${user.name}:${user.remote_status}`).join(', ')}`,
+        stdout: `Created ${desiredUsers.length} users on trojan-go. Status: ${desiredUsers.map((user) => `${user.name}:${user.remote_status}`).join(', ')}${autoPublish ? ' | published to mobile API' : ''}`,
       };
     });
 

@@ -1,4 +1,5 @@
 const { parseTrojanUrl } = require('./npanelUserService');
+const { englishName } = require('./countryNames');
 
 // Single mapper from a VpnCatalogItem (with country + server included) to the
 // clean mobile config shape. Critically exposes connection.host = the entry IP
@@ -14,7 +15,7 @@ function serializeConfig(item) {
     type: item.type, // free | premium
     sortOrder: item.sort_order,
     country: country
-      ? { name: country.name, code: country.code, flag: country.flag }
+      ? { name: englishName(country.code, country.name), code: country.code, flag: country.flag }
       : null,
     connection: {
       uri: item.config, // full trojan:// URI (Android parses this directly)
