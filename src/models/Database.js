@@ -36,6 +36,9 @@ if (DB_DIALECT === 'sqlite') {
       define: { charset: 'utf8mb4', collate: 'utf8mb4_unicode_ci' },
       dialectOptions: { charset: 'utf8mb4' },
       timezone: '+00:00',
+      // Retry transient connection/deadlock errors so a brief DB blip on the
+      // token-exchange path surfaces as a slow success, not a user-facing 500.
+      retry: { max: Number(process.env.DB_RETRY_MAX || 3) },
     },
   );
 }
@@ -552,6 +555,22 @@ const ApiDevice = sequelize.define('ApiDevice', {
   attest_counter: {
     type: DataTypes.INTEGER,
     defaultValue: 0,
+  },
+  // Resilience state for the fail-open attestation path (mobileSecurityService).
+  // attested_at = last FULL attestation; drives the reverify throttle. The
+  // degraded pair records a fail-open issuance (session minted despite the backend
+  // being unable to reach Apple/Google — a system error, not a device rejection).
+  attested_at: {
+    type: DataTypes.DATE,
+    allowNull: true,
+  },
+  attest_degraded_at: {
+    type: DataTypes.DATE,
+    allowNull: true,
+  },
+  attest_last_error: {
+    type: DataTypes.STRING,
+    allowNull: true,
   },
   is_premium: {
     type: DataTypes.BOOLEAN,

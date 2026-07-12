@@ -138,6 +138,16 @@ RATE_LIMIT_IP_MAX=3000
 ```
 > `TRUST_PROXY_HOPS=2`: aaPanel bir nginx reverse proxy kurar, üstünde Cloudflare var → **2** hop. (Cloudflare doğrudan Node'a bağlanıyorsa `1` yap.)
 
+**🛡️ Dayanıklılık (kullanıcı kaybını önleyen ayarlar — varsayılanları böyle bırak):**
+```
+ATTESTATION_FAIL_OPEN=true     (Google/Play Integrity çökerse/kota biterse kullanıcıyı içeri al; sadece cihaz KESİN sahte ise reddet)
+ATTESTATION_TIMEOUT_MS=5000    (Google çağrısı 5 sn'de yanıt vermezse bekletme, içeri al)
+ATTESTATION_REVERIFY_DAYS=7    (bir cihaz doğrulandıysa 7 gün tekrar Google'a sorma → kota + çökme etkisi çok azalır)
+REFRESH_TOKEN_TTL_DAYS=30      (oturum yenileme ömrü; uzatırsan yeniden-doğrulama daha seyrek olur)
+DB_RETRY_MAX=3                 (geçici DB hatasını 3 kez dene, kullanıcıya hata verme)
+```
+> Bu ayarlar sayesinde: Google Cloud çökse, Play Integrity kotası bitse ya da DB bir an takılsa bile **canlı kullanıcı uygulamayı kullanmaya devam eder.** Güvenlik yalnızca "cihaz kesinlikle sahte" dediğinde devreye girer. Acil bir durumda `ATTESTATION_FAIL_OPEN=false` yapıp attestation'ı katı moda alabilirsin (ama o zaman Google çökerse yeni kullanıcılar giremez).
+
 **E-posta alarmları (opsiyonel):** `SMTP_*` + `ALERT_EMAIL_TO` doldur.
 
 - [ ] Kaydet (nano'da `Ctrl+O`, `Enter`, `Ctrl+X`).
@@ -325,14 +335,18 @@ Repo klasöründe (`/www/wwwroot/vpnhub-backend`), sırayla:
 
 ## 📱 11. UYGULAMAYI BUILD ET & YAYINLA
 
-**11.1 — `app_key`'i build'e göm:**
-```
-# Android
-flutter build appbundle --release --dart-define=NPANEL_APP_KEY=app_senin-gercek-keyin
-# iOS
-flutter build ipa --release --dart-define=NPANEL_APP_KEY=app_senin-gercek-keyin
-```
-- [ ] Doğrula: build'i cihaza kur, aç → sunucu listesi geliyorsa `app_key` doğru.
+**11.1 — `app_key`'i uygulamaya yaz (koddan, build parametresi YOK):**
+- [ ] `lib/utils/my_helper.dart` dosyasını aç, `npanelAppKey` satırını bul:
+      ```dart
+      static const String npanelAppKey = "REPLACE_WITH_X_APP_KEY";
+      ```
+- [ ] Buradaki `REPLACE_WITH_X_APP_KEY`'i **panelde oluşturduğun uygulamanın `app_key`'i** ile değiştir (Bölüm 8.2'de kopyaladığın değer, `app_...` ile başlar).
+- [ ] Sonra normal build al (artık `--dart-define` gerekmez):
+      ```
+      flutter build appbundle --release      # Android
+      flutter build ipa --release            # iOS
+      ```
+- [ ] Doğrula: build'i cihaza kur, aç → sunucu listesi geliyorsa `app_key` doğru gömülmüş.
 
 **11.2 — Kontroller:**
 - [ ] `iosAppStoreId` (`lib/utils/my_helper.dart`) gerçek App Store numaran mı (çalışan bundle `proxify.argentina.vpn`).

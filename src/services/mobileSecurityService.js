@@ -11,7 +11,15 @@ const playIntegrity = require('./attestation/playIntegrity');
 const banService = require('./banService');
 
 const ACCESS_TOKEN_TTL_MS = 15 * 60 * 1000;
-const REFRESH_TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+// Refresh-token lifetime doubles as the outer re-attestation window: a device
+// that doesn't refresh within it must exchange (and re-attest) from scratch.
+// Env-tunable so the window can be widened without a code change; default 30d
+// keeps behaviour identical.
+const REFRESH_TOKEN_TTL_MS = Number(process.env.REFRESH_TOKEN_TTL_DAYS || 30) * 24 * 60 * 60 * 1000;
+// A device that fully attested within this window is trusted on re-exchange
+// without re-hitting Apple/Google — cuts provider calls and shrinks the window
+// in which a provider outage can touch returning users.
+const ATTESTATION_REVERIFY_DAYS = Number(process.env.ATTESTATION_REVERIFY_DAYS || 7);
 const CHALLENGE_TTL_MS = 5 * 60 * 1000;
 const REQUEST_CLOCK_SKEW_MS = 2 * 60 * 1000;
 const RATE_LIMIT_WINDOW_MS = 60 * 1000;
@@ -109,7 +117,9 @@ async function createChallenge({ app, platform, deviceId, appVersion }) {
 
 // Tenant-aware attestation dispatcher. development mode accepts a mock token for
 // local tests; strict mode runs real iOS App Attest / Android Play Integrity
-// verification against the per-app config. Returns { ok, subject?, keyId?, publicKeyPem?, error? }.
+// verification against the per-app config. Returns the underlying verifier result
+// unchanged — { ok, subject?, keyId?, publicKeyPem?, error?, failClass? } — so the
+// caller can distinguish a 'system' failure (fail-open eligible) from a 'reject'.
 async function verifyAttestation({ app, platform, deviceId, challenge, attestation, attestationToken }) {
   const mode = process.env.MOBILE_ATTESTATION_MODE || 'development';
   if (mode === 'development') {
@@ -135,16 +145,47 @@ async function exchangeToken({ app, platform, deviceId, challenge, attestation, 
     throw error;
   }
 
+  // Re-verification throttle: a device that fully attested within the reverify
+  // window is trusted without another Apple/Google round-trip. This cuts provider
+  // calls and means a provider outage can't touch returning users until their
+  // window elapses. The nonce is still single-use, so this is not a replay hole.
+  const existing = await ApiDevice.findOne({ where: { app_id: appId, device_id: deviceId, status: 'active' } });
+  const reverifyMs = ATTESTATION_REVERIFY_DAYS * 24 * 60 * 60 * 1000;
+  if (existing && existing.attested_at && (Date.now() - new Date(existing.attested_at).getTime()) < reverifyMs) {
+    await nonce.update({ used_at: new Date() });
+    await existing.update({
+      platform,
+      status: 'active',
+      firebase_uid: firebaseUid || existing.firebase_uid || null,
+      last_seen_at: new Date(),
+    });
+    return createSession(existing);
+  }
+
   const attestationResult = await verifyAttestation({ app, platform, deviceId, challenge, attestation, attestationToken });
+  const failOpen = process.env.ATTESTATION_FAIL_OPEN !== 'false';
+  const mode = process.env.MOBILE_ATTESTATION_MODE || 'development';
+  let degraded = false;
   if (!attestationResult.ok) {
-    const error = new Error('Device attestation failed');
-    error.status = 401;
-    error.detail = attestationResult.error;
-    throw error;
+    if (attestationResult.failClass === 'system' && failOpen && mode === 'strict') {
+      // FAIL-OPEN: the backend never got a real verdict from Apple/Google (their
+      // outage, our config, or a timeout) — NOT a genuine device rejection. Lock-
+      // ing legitimate users out over our own fault is worse than the marginal
+      // risk, so issue a session but flag it degraded for auditing/monitoring.
+      degraded = true;
+      console.warn('[attestation] fail-open: issued session despite system error', attestationResult.error);
+    } else {
+      // Genuine device rejection, fail-open disabled, or a development-mode miss.
+      const error = new Error('Device attestation failed');
+      error.status = 401;
+      error.detail = attestationResult.error;
+      throw error;
+    }
   }
 
   await nonce.update({ used_at: new Date() });
 
+  const now = new Date();
   const subject = JSON.stringify(attestationResult.subject || { platform });
   const [device] = await ApiDevice.findOrCreate({
     where: { app_id: appId, device_id: deviceId },
@@ -160,15 +201,29 @@ async function exchangeToken({ app, platform, deviceId, challenge, attestation, 
     },
   });
 
-  await device.update({
+  const update = {
     platform,
     status: 'active',
     firebase_uid: firebaseUid || device.firebase_uid || null,
     attestation_subject: subject,
     attest_key_id: attestationResult.keyId || device.attest_key_id || null,
     attest_public_key: attestationResult.publicKeyPem || device.attest_public_key || null,
-    last_seen_at: new Date(),
-  });
+    last_seen_at: now,
+  };
+  if (degraded) {
+    // Record the fail-open issuance. Deliberately do NOT stamp attested_at: a
+    // degraded session must re-attempt real attestation on the next exchange, not
+    // buy a reverify-window bypass off one outage.
+    update.attest_degraded_at = now;
+    update.attest_last_error = attestationResult.error || null;
+  } else {
+    // Full successful attestation: anchor the reverify window and clear any prior
+    // degraded marker.
+    update.attested_at = now;
+    update.attest_degraded_at = null;
+    update.attest_last_error = null;
+  }
+  await device.update(update);
 
   return createSession(device);
 }

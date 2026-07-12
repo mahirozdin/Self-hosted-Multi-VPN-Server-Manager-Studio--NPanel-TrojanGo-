@@ -5,12 +5,16 @@ const { verifyAttestation } = require('appattest-checker-node');
 // challenge, and sends { keyId, attestationObject(base64) }. The challenge bytes
 // here must equal what the client used as clientDataHash input (UTF-8 of the
 // challenge string); the library hashes it internally per Apple's spec.
+// failClass mirrors playIntegrity: 'system' = the backend couldn't run a real
+// verification (missing input / misconfig / library exception) and a legitimate
+// user could be locked out by our own fault; 'reject' = the App Attest library
+// actually verified and rejected the device. Callers fail-open only on 'system'.
 async function verify({ app, challenge, attestation }) {
   if (!attestation || !attestation.keyId || !attestation.attestationObject) {
-    return { ok: false, error: 'missing_attestation' };
+    return { ok: false, error: 'missing_attestation', failClass: 'system' };
   }
   if (!app || !app.apple_team_id || !app.ios_bundle_id) {
-    return { ok: false, error: 'app_attest_not_configured' };
+    return { ok: false, error: 'app_attest_not_configured', failClass: 'system' };
   }
 
   const appInfo = {
@@ -24,11 +28,11 @@ async function verify({ app, challenge, attestation }) {
   try {
     result = await verifyAttestation(appInfo, attestation.keyId, challengeBuf, attestationBuf);
   } catch (err) {
-    return { ok: false, error: 'verify_exception', message: err.message };
+    return { ok: false, error: 'verify_exception', failClass: 'system', message: err.message };
   }
 
   if ('verifyError' in result) {
-    return { ok: false, error: result.verifyError, message: result.errorMessage };
+    return { ok: false, error: result.verifyError, failClass: 'reject', message: result.errorMessage };
   }
   return {
     ok: true,

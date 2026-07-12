@@ -9,6 +9,20 @@ const SCOPE = 'https://www.googleapis.com/auth/playintegrity';
 const CLOCK_SKEW_MS = 2 * 60 * 1000;
 const authCache = new Map(); // app_id -> GoogleAuth
 
+// A Google decode call that hangs must never stall token exchange. We set both
+// google-auth-library's request `timeout` option AND a Promise.race backstop,
+// because a wedged socket can outlive the option. Resolves to TIMEOUT on expiry.
+const TIMEOUT = Symbol('attestation_timeout');
+function raceTimeout(promise, ms) {
+  let timer;
+  const guard = new Promise((resolve) => { timer = setTimeout(() => resolve(TIMEOUT), ms); });
+  return Promise.race([promise, guard]).finally(() => clearTimeout(timer));
+}
+
+function attestationTimeoutMs() {
+  return Number(process.env.ATTESTATION_TIMEOUT_MS || 5000);
+}
+
 function getAuth(app, saJson) {
   if (authCache.has(app.id)) return authCache.get(app.id);
   const auth = new GoogleAuth({ credentials: saJson, scopes: [SCOPE] });
@@ -16,45 +30,56 @@ function getAuth(app, saJson) {
   return auth;
 }
 
+// failClass tells the caller whether a failure is safe to fail-open on. 'system'
+// = the backend never got a real verdict from Google (missing token/config, or a
+// decode error/timeout) — a legitimate user could be locked out by our own
+// outage. 'reject' = Google WAS reached and returned a negative/mismatched
+// verdict — a genuine device rejection that must stay fail-closed.
 async function verify({ app, challenge, integrityToken }) {
-  if (!integrityToken) return { ok: false, error: 'missing_integrity_token' };
-  if (!app || !app.android_package_name) return { ok: false, error: 'play_integrity_not_configured' };
+  if (!integrityToken) return { ok: false, error: 'missing_integrity_token', failClass: 'system' };
+  if (!app || !app.android_package_name) return { ok: false, error: 'play_integrity_not_configured', failClass: 'system' };
 
   const saJson = getServiceAccountForApp(app);
-  if (!saJson) return { ok: false, error: 'play_integrity_sa_missing' };
+  if (!saJson) return { ok: false, error: 'play_integrity_sa_missing', failClass: 'system' };
 
   let payload;
   try {
     const client = await getAuth(app, saJson).getClient();
     const url = `https://playintegrity.googleapis.com/v1/${encodeURIComponent(app.android_package_name)}:decodeIntegrityToken`;
-    const res = await client.request({ url, method: 'POST', data: { integrity_token: integrityToken } });
+    const timeoutMs = attestationTimeoutMs();
+    const reqPromise = client.request({ url, method: 'POST', data: { integrity_token: integrityToken }, timeout: timeoutMs });
+    const res = await raceTimeout(reqPromise, timeoutMs);
+    if (res === TIMEOUT) {
+      reqPromise.catch(() => {}); // abandon the in-flight request without an unhandled rejection
+      return { ok: false, error: 'decode_timeout', failClass: 'system' };
+    }
     payload = res.data && res.data.tokenPayloadExternal;
   } catch (err) {
-    return { ok: false, error: 'decode_exception', message: err.message };
+    return { ok: false, error: 'decode_exception', failClass: 'system', message: err.message };
   }
-  if (!payload) return { ok: false, error: 'decode_failed' };
+  if (!payload) return { ok: false, error: 'decode_failed', failClass: 'system' };
 
   const requestDetails = payload.requestDetails || {};
   const appIntegrity = payload.appIntegrity || {};
   const deviceIntegrity = payload.deviceIntegrity || {};
 
   if (requestDetails.requestPackageName !== app.android_package_name) {
-    return { ok: false, error: 'package_mismatch' };
+    return { ok: false, error: 'package_mismatch', failClass: 'reject' };
   }
   if (requestDetails.nonce !== challenge) {
-    return { ok: false, error: 'nonce_mismatch' };
+    return { ok: false, error: 'nonce_mismatch', failClass: 'reject' };
   }
   const ts = Number(requestDetails.timestampMillis || 0);
   if (!ts || Math.abs(Date.now() - ts) > CLOCK_SKEW_MS) {
-    return { ok: false, error: 'timestamp_skew' };
+    return { ok: false, error: 'timestamp_skew', failClass: 'reject' };
   }
   if (appIntegrity.appRecognitionVerdict !== 'PLAY_RECOGNIZED') {
-    return { ok: false, error: 'app_not_recognized' };
+    return { ok: false, error: 'app_not_recognized', failClass: 'reject' };
   }
   const verdicts = deviceIntegrity.deviceRecognitionVerdict || [];
   const minVerdict = app.android_min_device_verdict || 'MEETS_DEVICE_INTEGRITY';
   if (!verdicts.includes(minVerdict)) {
-    return { ok: false, error: 'device_integrity_failed' };
+    return { ok: false, error: 'device_integrity_failed', failClass: 'reject' };
   }
 
   return { ok: true, subject: { platform: 'android', package: app.android_package_name, verdicts } };
@@ -89,7 +114,13 @@ async function checkConfig(app) {
     const auth = new GoogleAuth({ credentials: saJson, scopes: [SCOPE] });
     const client = await auth.getClient();
     const url = `https://playintegrity.googleapis.com/v1/${encodeURIComponent(app.android_package_name)}:decodeIntegrityToken`;
-    await client.request({ url, method: 'POST', data: { integrity_token: 'panel-health-check-invalid-token' } });
+    const timeoutMs = attestationTimeoutMs();
+    const reqPromise = client.request({ url, method: 'POST', data: { integrity_token: 'panel-health-check-invalid-token' }, timeout: timeoutMs });
+    const res = await raceTimeout(reqPromise, timeoutMs);
+    if (res === TIMEOUT) {
+      reqPromise.catch(() => {}); // abandon the in-flight request without an unhandled rejection
+      return { ok: false, detail: `Google yanıt vermedi (zaman aşımı ${timeoutMs}ms). Ağ/erişim ya da Play Integrity API sorunu olabilir.` };
+    }
     // Google normally rejects a fake token; reaching here still proves the call went through.
     return { ok: true, detail: 'Bağlantı kuruldu (Google yanıt verdi).' };
   } catch (err) {
