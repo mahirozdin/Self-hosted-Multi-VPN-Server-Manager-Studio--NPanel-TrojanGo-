@@ -401,6 +401,7 @@ function renderApps() {
                     <div><strong>${escapeHtml(a.name)}</strong><small>${escapeHtml(a.slug)} · ${escapeHtml(a.status)}</small></div></div>
                 <div class="card-actions">
                     <button class="btn btn-secondary btn-compact" data-action="app-catalog" data-id="${a.id}"><i class="ri-list-check"></i> Katalog</button>
+                    <button class="icon-btn" data-action="edit-app" data-id="${a.id}" title="Düzenle (attestation alanları)"><i class="ri-pencil-line"></i></button>
                     <button class="btn btn-secondary btn-compact" data-action="rotate-app" data-id="${a.id}"><i class="ri-key-2-line"></i> Anahtar</button>
                     <button class="icon-btn warn" data-action="delete-app" data-id="${a.id}" title="Sil"><i class="ri-delete-bin-line"></i></button>
                 </div>
@@ -566,7 +567,13 @@ function populateAppSelect(selectId) {
 document.getElementById('addServerBtn').addEventListener('click', () => { populateCountrySelect('addServerCountry'); populateAppSelect('addServerApp'); openModal('addServerModal'); });
 document.getElementById('installServerBtn').addEventListener('click', () => { populateCountrySelect('installServerCountry'); populateAppSelect('installServerApp'); openModal('installServerModal'); });
 document.getElementById('addCountryBtn').addEventListener('click', () => openModal('countryModal'));
-document.getElementById('newAppBtn').addEventListener('click', () => openModal('appModal'));
+document.getElementById('newAppBtn').addEventListener('click', () => {
+    const f = document.getElementById('appForm');
+    f.reset(); delete f.dataset.id;
+    document.getElementById('appModalTitle').textContent = 'Uygulama ekle';
+    document.getElementById('appModalSubmit').textContent = 'Oluştur';
+    openModal('appModal');
+});
 document.getElementById('addConfigBtn').addEventListener('click', openConfigModal);
 document.getElementById('logoutBtn').addEventListener('click', () => { localStorage.removeItem('token'); window.location.href = '/login.html'; });
 document.getElementById('refreshAllBtn').addEventListener('click', async () => { await api('/servers/refresh-all', { method: 'POST' }); setTimeout(() => loadAll({ silent: true }), 1500); });
@@ -825,12 +832,23 @@ document.getElementById('countryForm').addEventListener('submit', async (e) => {
 });
 document.getElementById('appForm').addEventListener('submit', async (e) => {
     e.preventDefault();
+    const f = e.target;
+    const id = f.dataset.id;
     try {
-        const created = await api('/apps', { method: 'POST', body: JSON.stringify(formData(e.target)) });
-        document.getElementById('appModal').classList.remove('open');
-        e.target.reset();
-        if (created) alert(`Uygulama oluşturuldu.\n\nX-App-Key (build'e göm):\n${created.app_key}\n\nHMAC secret (bir kez gösterilir):\n${created.hmac_secret}`);
-        loadApps();
+        if (id) {
+            // Edit existing app (attestation fields etc.) — key/secret unchanged.
+            await api(`/apps/${id}`, { method: 'PUT', body: JSON.stringify(formData(f)) });
+            document.getElementById('appModal').classList.remove('open');
+            f.reset(); delete f.dataset.id;
+            alert('Uygulama güncellendi.');
+            loadApps();
+        } else {
+            const created = await api('/apps', { method: 'POST', body: JSON.stringify(formData(f)) });
+            document.getElementById('appModal').classList.remove('open');
+            f.reset();
+            if (created) alert(`Uygulama oluşturuldu.\n\nX-App-Key (build'e göm):\n${created.app_key}\n\nHMAC secret (bir kez gösterilir):\n${created.hmac_secret}`);
+            loadApps();
+        }
     } catch (err) { alert(err.message); }
 });
 document.getElementById('configForm').addEventListener('submit', async (e) => {
@@ -936,6 +954,24 @@ document.body.addEventListener('click', async (e) => {
             await loadAll({ silent: true });
         }
         else if (action === 'select-app' || action === 'app-catalog') { await loadAppCatalog(id); }
+        else if (action === 'edit-app') {
+            const a = state.apps.find((x) => x.id === id);
+            if (!a) return;
+            const f = document.getElementById('appForm');
+            f.reset(); f.dataset.id = a.id;
+            f.name.value = a.name || '';
+            f.slug.value = a.slug || '';
+            f.ios_bundle_id.value = a.ios_bundle_id || '';
+            f.apple_team_id.value = a.apple_team_id || '';
+            f.apple_attest_env.value = a.apple_attest_env || 'production';
+            f.android_package_name.value = a.android_package_name || '';
+            f.google_cloud_project_number.value = a.google_cloud_project_number || '';
+            f.play_integrity_sa_ref.value = a.play_integrity_sa_ref || '';
+            f.min_supported_version.value = a.min_supported_version || '';
+            document.getElementById('appModalTitle').textContent = 'Uygulamayı düzenle';
+            document.getElementById('appModalSubmit').textContent = 'Kaydet';
+            openModal('appModal');
+        }
         else if (action === 'rotate-app') {
             if (!confirm('Anahtarı döndür? Eski key/secret hemen geçersiz olur.')) return;
             const r = await api(`/apps/${id}/rotate-key`, { method: 'POST' });

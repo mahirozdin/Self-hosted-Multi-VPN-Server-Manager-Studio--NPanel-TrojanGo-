@@ -295,7 +295,7 @@ Repo klasöründe (`/www/wwwroot/vpnhub-backend`), sırayla:
 - [ ] Sunucuda klasör: `mkdir -p /opt/npanel-secrets`
 - [ ] JSON'ı oraya kopyala (örn `scp` ile): `/opt/npanel-secrets/play-integrity.json`
 - [ ] `.env`'e ekle: `GOOGLE_APPLICATION_CREDENTIALS_DIR=/opt/npanel-secrets`
-- [ ] Panelde App kaydını düzenle → **`play_integrity_sa_ref`** = `play-integrity.json`.
+- [ ] Panelde App kaydını düzenle: **Uygulamalar** sekmesi → ilgili uygulamanın kartındaki **kalem (✏️ Düzenle)** ikonu → açılan formda **"Play Integrity SA dosyası"** alanına `play-integrity.json` yaz → **Kaydet**. (Aynı formda `apple_team_id`, `ios_bundle_id`, `apple_attest_env=production`, `android_package_name`, `google_cloud_project_number` de burada girilir.)
       > ⚠️ Bu JSON `.env` gibi git'e girmez; deploy onu **etkilemez**, sunucuda kalır.
 
 **9.A.5 — Play Console + KOTA (1M için kritik):** [Play Console](https://play.google.com/console) → uygulaman → **Release → App integrity** → Play Integrity'nin bu Google Cloud projesine bağlı olduğunu doğrula. **Kota:** Google Cloud → APIs & Services → **Play Integrity API → Quotas** → varsayılan **~10.000/gün**; 1M kullanıcı için **yükseltme talebi** gönder (erken yap, onay günler sürebilir).

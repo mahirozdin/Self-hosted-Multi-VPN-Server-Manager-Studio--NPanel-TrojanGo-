@@ -418,15 +418,18 @@
     <div id="appModal" class="modal">
         <div class="modal-content">
             <button class="close icon-btn"><i class="ri-close-line"></i></button>
-            <h2>Uygulama ekle</h2>
+            <h2 id="appModalTitle">Uygulama ekle</h2>
             <form id="appForm" class="form-grid">
                 <input type="text" name="name" placeholder="Uygulama adı" required>
                 <input type="text" name="slug" placeholder="slug (örn vpn-argentina)" required>
-                <input type="text" name="ios_bundle_id" placeholder="iOS bundle id">
+                <input type="text" name="ios_bundle_id" placeholder="iOS bundle id (örn proxify.argentina.vpn)">
                 <input type="text" name="apple_team_id" placeholder="Apple Team ID">
-                <input type="text" name="android_package_name" placeholder="Android package">
-                <input type="text" name="min_supported_version" placeholder="Min sürüm (örn 2.3.0)">
-                <button type="submit" class="btn btn-primary full-span">Oluştur</button>
+                <input type="text" name="apple_attest_env" placeholder="Apple attest env (production)">
+                <input type="text" name="android_package_name" placeholder="Android package adı">
+                <input type="text" name="google_cloud_project_number" placeholder="Google Cloud proje numarası">
+                <input type="text" name="play_integrity_sa_ref" placeholder="Play Integrity SA dosyası (örn play-integrity.json)">
+                <input type="text" name="min_supported_version" placeholder="Min sürüm (boş veya örn 2.2.2)">
+                <button type="submit" id="appModalSubmit" class="btn btn-primary full-span">Oluştur</button>
             </form>
         </div>
     </div>
