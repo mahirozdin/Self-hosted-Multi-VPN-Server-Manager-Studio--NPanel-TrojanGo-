@@ -60,6 +60,8 @@ function isValidSemverOrEmpty(v) {
     return /^\d+(\.\d+){1,3}$/.test(String(v).trim());
 }
 const { serializeConfig } = require('../services/catalogSerializer');
+const appAttest = require('../services/attestation/appAttest');
+const playIntegrity = require('../services/attestation/playIntegrity');
 const { englishName } = require('../services/countryNames');
 const connectionLogService = require('../services/connectionLogService');
 const banService = require('../services/banService');
@@ -918,6 +920,27 @@ router.post('/apps/:id/rotate-key', async (req, res) => {
     await app.update({ app_key: appKey, hmac_secret: hmacSecret });
     invalidateAppCache();
     res.json({ app_key: appKey, hmac_secret: hmacSecret });
+});
+
+// Verify the attestation setup for one app WITHOUT a real device: iOS field
+// presence + a live Play Integrity call (dummy token) so the panel can show
+// OK/error per platform ("did I configure this correctly?").
+router.post('/apps/:id/attestation-check', async (req, res) => {
+    try {
+        const app = await App.findByPk(req.params.id);
+        if (!app) return res.status(404).json({ error: 'App not found' });
+        const [android, ios] = await Promise.all([
+            playIntegrity.checkConfig(app),
+            Promise.resolve(appAttest.checkConfig(app)),
+        ]);
+        res.json({
+            mode: process.env.MOBILE_ATTESTATION_MODE || 'development',
+            ios,
+            android,
+        });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
 });
 
 router.get('/apps/:id/catalog', async (req, res) => {

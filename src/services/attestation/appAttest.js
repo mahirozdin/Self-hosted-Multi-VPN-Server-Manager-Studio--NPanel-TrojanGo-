@@ -38,4 +38,22 @@ async function verify({ app, challenge, attestation }) {
   };
 }
 
-module.exports = { verify };
+// Config health check for the admin panel. App Attest is verified locally (no
+// Apple server call), so there is nothing to "connect" to — we can only confirm
+// the required per-app fields are present. Real verification happens on-device.
+function checkConfig(app) {
+  const missing = [];
+  if (!app || !app.apple_team_id) missing.push('Apple Team ID');
+  if (!app || !app.ios_bundle_id) missing.push('iOS bundle id');
+  if (missing.length) {
+    return { ok: false, detail: `Eksik alan: ${missing.join(', ')}. App kaydına gir.` };
+  }
+  return {
+    ok: true,
+    detail: `Gerekli alanlar dolu (App ID: ${app.apple_team_id}.${app.ios_bundle_id}). `
+      + 'App Attest cihazda/yerel doğrulanır; sunucu bağlantısı gerekmez. '
+      + 'Gerçek doğrulama, gerçek bir iPhone uygulamayı açınca çalışır.',
+  };
+}
+
+module.exports = { verify, checkConfig };

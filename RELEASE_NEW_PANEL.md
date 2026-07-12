@@ -303,7 +303,13 @@ Repo klasöründe (`/www/wwwroot/vpnhub-backend`), sırayla:
 ### 9.B — iOS: Apple App Attest
 - [ ] Panelde App kaydında: **`ios_bundle_id`** = `proxify.argentina.vpn`, **`apple_team_id`** = Apple Team ID'n ([developer.apple.com](https://developer.apple.com/account) → Membership → Team ID), `apple_attest_env` = `production`. (Ekstra sunucu sırrı gerekmez.)
 
-### 9.C — Strict'e geç + TEST ET
+### 9.C — Panelden kurulumu doğrula (yeni)
+- [ ] Strict'e geçmeden önce kurulumu panelden test et: **Uygulamalar → kalem (Düzenle) → "Kurulumu doğrula (attestation)"** butonu. Panel her platform için **OK / HATA** gösterir:
+      - **iOS App Attest:** gerekli alanlar (team id + bundle) dolu mu.
+      - **Android Play Integrity:** SA dosyası bulunuyor mu, geçerli mi ve **gerçekten Google'a bağlanabiliyor mu** (canlı test). "OK" görüyorsan servis hesabın geçerli, Play Integrity API erişilebilir ve package eşleşiyor demektir. "HATA" ise mesaj tam olarak neyin eksik olduğunu söyler (dizin/dosya/yetki/package).
+- [ ] İki platform da **OK** olana kadar Bölüm 9.A/9.B'yi düzelt.
+
+### 9.D — Strict'e geç + gerçek cihazda TEST ET
 - [ ] Hepsi hazırsa `.env`: `MOBILE_ATTESTATION_MODE=strict` → `pm2 restart npanel`.
 - [ ] **Gerçek cihazda** test et (emülatör olmaz): gerçek Android + gerçek iPhone'da uygulamayı aç → sunucu listesi geliyor mu? Gelmiyorsa geçici `development`'a al, `pm2 logs npanel` ile hatayı gör, düzelt, tekrar strict.
 

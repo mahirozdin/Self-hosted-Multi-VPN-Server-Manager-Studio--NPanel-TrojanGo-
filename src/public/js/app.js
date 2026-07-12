@@ -572,7 +572,29 @@ document.getElementById('newAppBtn').addEventListener('click', () => {
     f.reset(); delete f.dataset.id;
     document.getElementById('appModalTitle').textContent = 'Uygulama ekle';
     document.getElementById('appModalSubmit').textContent = 'Oluştur';
+    document.getElementById('appAttestCheckBtn').style.display = 'none';
+    document.getElementById('appAttestResult').innerHTML = '';
     openModal('appModal');
+});
+
+// Verify attestation setup for the app being edited: save the current form
+// values first (so the newest SA ref / bundle is tested), then hit the check
+// endpoint and show OK/error per platform.
+document.getElementById('appAttestCheckBtn').addEventListener('click', async () => {
+    const f = document.getElementById('appForm');
+    const id = f.dataset.id;
+    if (!id) return;
+    const out = document.getElementById('appAttestResult');
+    out.innerHTML = '<div class="hint">Kontrol ediliyor…</div>';
+    try {
+        await api(`/apps/${id}`, { method: 'PUT', body: JSON.stringify(formData(f)) });
+        const r = await api(`/apps/${id}/attestation-check`, { method: 'POST' });
+        const row = (label, res) => `<div class="list-row"><div class="grow"><strong>${label}</strong><small>${escapeHtml(res.detail || '')}</small></div><span class="pill ${res.ok ? 'pill-online' : 'pill-offline'}">${res.ok ? 'OK' : 'HATA'}</span></div>`;
+        out.innerHTML = `<div class="hint">Attestation modu: <b>${escapeHtml(r.mode)}</b>${r.mode === 'development' ? ' (canlıda strict olmalı)' : ''}</div>${row('iOS App Attest', r.ios)}${row('Android Play Integrity', r.android)}`;
+        loadApps();
+    } catch (e) {
+        out.innerHTML = `<div class="pill pill-offline">Hata: ${escapeHtml(e.message)}</div>`;
+    }
 });
 document.getElementById('addConfigBtn').addEventListener('click', openConfigModal);
 document.getElementById('logoutBtn').addEventListener('click', () => { localStorage.removeItem('token'); window.location.href = '/login.html'; });
@@ -970,6 +992,8 @@ document.body.addEventListener('click', async (e) => {
             f.min_supported_version.value = a.min_supported_version || '';
             document.getElementById('appModalTitle').textContent = 'Uygulamayı düzenle';
             document.getElementById('appModalSubmit').textContent = 'Kaydet';
+            document.getElementById('appAttestCheckBtn').style.display = '';
+            document.getElementById('appAttestResult').innerHTML = '';
             openModal('appModal');
         }
         else if (action === 'rotate-app') {
