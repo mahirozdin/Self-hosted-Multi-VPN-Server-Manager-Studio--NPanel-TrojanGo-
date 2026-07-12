@@ -75,6 +75,50 @@ app.use((req, res, next) => {
   next();
 });
 app.use(bodyParser.json());
+
+// ---- Secret admin-panel path (obscurity gate) ----
+// When ADMIN_PANEL_PATH is set, the panel is invisible at the root: only someone
+// who visits https://host/<ADMIN_PANEL_PATH> gets in (it sets a signed cookie and
+// bounces to '/'). Every non-API, non-socket request without that cookie gets a
+// 404, so random scanners can't find the login page. This is defence-in-depth on
+// TOP of the admin password — not a replacement for it. Leave the env unset to
+// keep the classic behaviour (panel served at '/').
+const ADMIN_PANEL_PATH = (process.env.ADMIN_PANEL_PATH || '').trim().replace(/^\/+|\/+$/g, '');
+if (ADMIN_PANEL_PATH) {
+  const gateSecret = process.env.ADMIN_SESSION_SECRET || process.env.ADMIN_PASSWORD_HASH || process.env.ADMIN_PASSWORD || 'np-gate';
+  // Cookie value is a hash, so it never leaks the secret path and can't be guessed.
+  const GATE_VALUE = crypto.createHash('sha256').update(`panel:${ADMIN_PANEL_PATH}:${gateSecret}`).digest('hex');
+  const GATE_COOKIE = 'np_panel';
+  const GATE_MAX_AGE = 30 * 24 * 60 * 60; // 30 days
+
+  const readCookie = (header, name) => {
+    if (!header) return null;
+    for (const part of header.split(';')) {
+      const eq = part.indexOf('=');
+      if (eq === -1) continue;
+      if (part.slice(0, eq).trim() === name) return part.slice(eq + 1).trim();
+    }
+    return null;
+  };
+
+  // The secret entry point: set the gate cookie, then redirect to the panel root.
+  app.get('/' + ADMIN_PANEL_PATH, (req, res) => {
+    const secure = req.secure || req.headers['x-forwarded-proto'] === 'https';
+    res.setHeader(
+      'Set-Cookie',
+      `${GATE_COOKIE}=${GATE_VALUE}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${GATE_MAX_AGE}${secure ? '; Secure' : ''}`,
+    );
+    res.redirect('/');
+  });
+
+  // Gate everything that isn't the mobile/admin API or the terminal websocket.
+  app.use((req, res, next) => {
+    if (req.path.startsWith('/api') || req.path.startsWith('/socket.io')) return next();
+    if (readCookie(req.headers.cookie, GATE_COOKIE) === GATE_VALUE) return next();
+    return res.status(404).send('Not Found');
+  });
+}
+
 app.use(express.static(path.join(__dirname, 'public')));
 
 const cron = require('node-cron');

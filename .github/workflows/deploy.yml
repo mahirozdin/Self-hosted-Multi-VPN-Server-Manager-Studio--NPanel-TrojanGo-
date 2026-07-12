@@ -1,0 +1,57 @@
+name: Deploy backend + admin panel
+
+# Otomatik deploy: bir sürüm etiketi (tag) push edildiğinde tetiklenir.
+#   git tag v1.0.3
+#   git push origin v1.0.3
+# aaPanel sunucusuna SSH ile bağlanır, etiketi checkout eder, bağımlılıkları
+# kurar, DB migration'larını uygular ve uygulamayı PM2 ile yeniden başlatır.
+# Admin paneli (src/public) aynı repoda olduğu için checkout ile birlikte güncellenir.
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+# Üst üste tag atılırsa deploy'lar birbirine karışmasın (sıralı çalışsın).
+concurrency:
+  group: production-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: SSH deploy to aaPanel server
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy over SSH
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          port: ${{ secrets.DEPLOY_PORT }}
+          script_stop: true
+          command_timeout: 20m
+          script: |
+            set -euo pipefail
+            APP_DIR="${{ secrets.DEPLOY_PATH }}"
+            TAG="${{ github.ref_name }}"
+            echo "==> Deploying $TAG to $APP_DIR"
+            cd "$APP_DIR"
+
+            # .env ve node_modules .gitignore'da olduğu için checkout onları
+            # ETKİLEMEZ; sunucudaki sırlar korunur.
+            git fetch --all --tags --prune
+            git checkout --force "$TAG"
+
+            echo "==> Installing dependencies (production only)"
+            npm ci --omit=dev
+
+            echo "==> Running database migrations"
+            npm run migrate
+
+            echo "==> Restarting app (PM2)"
+            # İlk kez ise başlat, aksi halde yeniden başlat.
+            pm2 restart npanel --update-env || pm2 start src/server.js --name npanel
+            pm2 save
+
+            echo "==> Deploy complete: $(git describe --tags --always)"
