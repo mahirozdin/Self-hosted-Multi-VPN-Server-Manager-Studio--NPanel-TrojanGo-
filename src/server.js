@@ -119,7 +119,17 @@ if (ADMIN_PANEL_PATH) {
   });
 }
 
-app.use(express.static(path.join(__dirname, 'public')));
+// Serve the admin panel. `no-cache` on html/js/css means the browser keeps a
+// copy but revalidates with the server on every use (304 when unchanged, fresh
+// 200 the moment we deploy new panel code) — so an updated app.js is never
+// stuck behind a stale browser cache after a deploy.
+app.use(express.static(path.join(__dirname, 'public'), {
+  setHeaders: (res, filePath) => {
+    if (/\.(html|js|css)$/i.test(filePath)) {
+      res.setHeader('Cache-Control', 'no-cache');
+    }
+  },
+}));
 
 const cron = require('node-cron');
 const apiRoutes = require('./routes/api');
