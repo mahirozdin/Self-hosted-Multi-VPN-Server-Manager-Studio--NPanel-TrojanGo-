@@ -24,7 +24,15 @@ if (DB_DIALECT === 'sqlite') {
       port: Number(process.env.DB_PORT || 3306),
       dialect: 'mysql',
       logging: false,
-      pool: { max: 10, min: 0, acquire: 30000, idle: 10000 },
+      // Pool sizing is env-tunable for scale: at high request volume the default
+      // max of 10 against a remote MySQL becomes the throughput ceiling. Raise
+      // DB_POOL_MAX in tandem with the server's mysqld max_connections.
+      pool: {
+        max: Number(process.env.DB_POOL_MAX || 10),
+        min: Number(process.env.DB_POOL_MIN || 0),
+        acquire: Number(process.env.DB_POOL_ACQUIRE || 30000),
+        idle: Number(process.env.DB_POOL_IDLE || 10000),
+      },
       define: { charset: 'utf8mb4', collate: 'utf8mb4_unicode_ci' },
       dialectOptions: { charset: 'utf8mb4' },
       timezone: '+00:00',
@@ -134,6 +142,42 @@ const Server = sequelize.define('Server', {
   auto_publish: {
     type: DataTypes.BOOLEAN,
     defaultValue: false,
+  },
+  // Live load rollup, refreshed by loadMetricsService each poll. load_pct is the
+  // EMA-smoothed 0-100 score = max(bandwidth%, cpu%, concurrent-IP% when capped).
+  load_pct: {
+    type: DataTypes.INTEGER,
+    allowNull: true,
+  },
+  load_level: {
+    type: DataTypes.STRING, // low | medium | high | unknown
+    defaultValue: 'unknown',
+  },
+  load_updated_at: {
+    type: DataTypes.DATE,
+    allowNull: true,
+  },
+  live_ip_total: {
+    type: DataTypes.INTEGER, // sum of users' ip_current (distinct client IPs)
+    allowNull: true,
+  },
+  throughput_bps: {
+    type: DataTypes.BIGINT, // BITS/sec — trojan-go reports bytes/sec, stored ×8
+    allowNull: true,
+  },
+  cpu_util: {
+    type: DataTypes.INTEGER, // pct, load1/nproc
+    allowNull: true,
+  },
+  // Capacity inputs for the load score. Bandwidth falls back to the
+  // default_server_bandwidth_mbps setting; a null IP cap disables that component.
+  max_throughput_mbps: {
+    type: DataTypes.INTEGER,
+    allowNull: true,
+  },
+  max_concurrent_ips: {
+    type: DataTypes.INTEGER,
+    allowNull: true,
   },
 });
 
@@ -295,6 +339,13 @@ const NpanelUser = sequelize.define('NpanelUser', {
     type: DataTypes.INTEGER,
     defaultValue: 0,
   },
+  // Distinct client IPs currently connected as this trojan-go user. Only counted
+  // on-box while ip_limit > 0 — the panel arms a high sentinel for that; the
+  // sentinel is never stored here (ip_limit stays the admin-intended value).
+  ip_current: {
+    type: DataTypes.INTEGER,
+    defaultValue: 0,
+  },
   live_synced_at: {
     type: DataTypes.DATE,
     allowNull: true,
@@ -419,6 +470,9 @@ const VpnCatalogItem = sequelize.define('VpnCatalogItem', {
   latency_min: { type: DataTypes.INTEGER, allowNull: true },
   latency_max: { type: DataTypes.INTEGER, allowNull: true },
   test_samples: { type: DataTypes.TEXT, allowNull: true }, // JSON [{ok, ms, at}] last 10
+  // Panel's least-loaded pick within this item's (country, type) group, refreshed
+  // with hysteresis by loadMetricsService; exposed to mobile as `recommended`.
+  recommended: { type: DataTypes.BOOLEAN, defaultValue: false },
 });
 
 // Tenant: each mobile VPN app served by this backend is one App.
@@ -578,6 +632,7 @@ const ApiNonce = sequelize.define('ApiNonce', {
 }, {
   indexes: [
     { fields: ['device_id', 'purpose', 'expires_at'] },
+    { fields: ['expires_at'], name: 'api_nonces_expires' }, // hot purge predicate (migration 0011)
   ],
 });
 
@@ -614,6 +669,10 @@ const ApiAuditLog = sequelize.define('ApiAuditLog', {
     type: DataTypes.TEXT,
     allowNull: true,
   },
+}, {
+  indexes: [
+    { fields: ['createdAt'], name: 'api_audit_logs_created' }, // hot purge predicate (migration 0011)
+  ],
 });
 
 // Legal connection record: who (device_id + firebase_uid) connected from which
@@ -694,7 +753,7 @@ const Setting = sequelize.define('Setting', {
 // resolved when it recovers. Drives alert de-dup and the health history view.
 const MonitorIncident = sequelize.define('MonitorIncident', {
   server_id: { type: DataTypes.INTEGER, allowNull: false },
-  kind: { type: DataTypes.STRING, allowNull: false }, // vpn | ssh | trojan | cert | config
+  kind: { type: DataTypes.STRING, allowNull: false }, // vpn | ssh | trojan | cert | config | load
   catalog_item_id: { type: DataTypes.INTEGER, allowNull: true }, // set for kind='config'
   status: { type: DataTypes.STRING, defaultValue: 'open' }, // open | resolved
   message: { type: DataTypes.TEXT, allowNull: true },

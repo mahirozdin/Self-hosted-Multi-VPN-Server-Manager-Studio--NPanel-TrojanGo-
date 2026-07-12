@@ -189,15 +189,34 @@
                     <label>Premium hız limiti (KiB/s, 0=limitsiz)
                         <input type="number" name="premium_speed_kib" value="0" min="0">
                     </label>
-                    <label>Free IP limiti (0 = limitsiz)
+                    <label>Free IP limiti (0 = limitsiz; pozitif limit aşımı bağlantıyı reddeder)
                         <input type="number" name="free_ip_limit" value="0" min="0">
                     </label>
                     <label>Config testi timeout (saniye)
                         <input type="number" name="config_test_timeout" value="30" min="5" max="120">
                     </label>
+                    <label>Yük ölçüm aralığı (saniye)
+                        <input type="number" name="load_poll_seconds" value="60" min="15" max="3600">
+                    </label>
+                    <label>Varsayılan bant genişliği kapasitesi (Mbps)
+                        <input type="number" name="default_server_bandwidth_mbps" value="1000" min="1">
+                    </label>
+                    <label>Yük alarm eşiği (%)
+                        <input type="number" name="load_alert_threshold" value="90" min="50" max="100">
+                    </label>
+                    <label>IP takip sentinel limiti
+                        <input type="number" name="stats_ip_limit_sentinel" value="50000" min="1">
+                    </label>
+                    <label>Varsayılan Free kullanıcı sayısı
+                        <input type="number" name="default_free_count" value="2" min="0" max="10">
+                    </label>
+                    <label>Varsayılan Premium kullanıcı sayısı
+                        <input type="number" name="default_premium_count" value="1" min="0" max="10">
+                    </label>
                     <label class="switch-row"><input type="checkbox" name="monitor_enabled" value="true"> Sağlık izleme açık</label>
                     <label class="switch-row"><input type="checkbox" name="auto_renew_ssl" value="true"> Otomatik sertifika yenileme açık</label>
                     <label class="switch-row"><input type="checkbox" name="config_test_enabled" value="true"> Saatlik gerçek-tünel config testi açık</label>
+                    <label class="switch-row"><input type="checkbox" name="stats_ip_tracking" value="true"> Cihaz sayımı için IP takibi (sentinel ip-limit) açık</label>
                     <div class="full-span" style="display:flex;gap:8px;flex-wrap:wrap">
                         <button type="submit" class="btn btn-primary"><i class="ri-save-3-line"></i> Kaydet</button>
                         <button type="button" id="testEmailBtn" class="btn btn-secondary"><i class="ri-mail-send-line"></i> Test e-postası gönder</button>
@@ -238,6 +257,14 @@
                 <label class="switch-row full-span"><input type="checkbox" name="import_existing" value="true"> Eski configler varsa import edilsin mi?</label>
                 <label class="switch-row full-span"><input type="checkbox" name="auto_publish" value="true"> Eklenince mobil API'ye otomatik yayınla?</label>
                 <label class="switch-row full-span"><input type="checkbox" name="create_defaults" value="true" checked> Varsayılan kullanıcıları otomatik oluştur?</label>
+                <div id="addServerCounts" class="full-span" style="display:grid;gap:8px;grid-template-columns:1fr 1fr;">
+                    <label>Free kullanıcı sayısı
+                        <input type="number" name="free_count" min="0" max="10" placeholder="varsayılan: 2">
+                    </label>
+                    <label>Premium kullanıcı sayısı
+                        <input type="number" name="premium_count" min="0" max="10" placeholder="varsayılan: 1">
+                    </label>
+                </div>
                 <select name="app_id" id="addServerApp" class="full-span"><option value="">Uygulama: varsayılan (Ayarlar'dan)</option></select>
                 <button type="submit" class="btn btn-primary full-span">Sunucu ekle</button>
             </form>
@@ -263,6 +290,15 @@
                     <input type="text" name="country_name" placeholder="Yeni ülke adı">
                     <input type="text" name="country_code" placeholder="ISO (AR)" maxlength="4">
                 </div>
+                <label class="switch-row full-span"><input type="checkbox" name="create_defaults" value="true" checked> Varsayılan kullanıcıları otomatik oluştur?</label>
+                <div id="installServerCounts" class="full-span" style="display:grid;gap:8px;grid-template-columns:1fr 1fr;">
+                    <label>Free kullanıcı sayısı
+                        <input type="number" name="free_count" min="0" max="10" placeholder="varsayılan: 2">
+                    </label>
+                    <label>Premium kullanıcı sayısı
+                        <input type="number" name="premium_count" min="0" max="10" placeholder="varsayılan: 1">
+                    </label>
+                </div>
                 <label class="switch-row full-span"><input type="checkbox" name="auto_publish" value="true" checked> Kurulum bitince mobil API'ye otomatik yayınla</label>
                 <select name="app_id" id="installServerApp" class="full-span"><option value="">Uygulama: varsayılan (Ayarlar'dan)</option></select>
                 <button type="submit" class="btn btn-primary full-span">Kurulumu başlat</button>
@@ -283,6 +319,12 @@
                 <input type="password" name="password" placeholder="Yeni SSH şifre (boş = değişmez)">
                 <input type="text" name="domain" placeholder="Domain" required class="full-span">
                 <textarea name="trojan_config" placeholder="Trojan config" class="full-span"></textarea>
+                <label>Kapasite: bant genişliği (Mbps)
+                    <input type="number" name="max_throughput_mbps" min="1" placeholder="boş = Ayarlar varsayılanı">
+                </label>
+                <label>Kapasite: eşzamanlı IP
+                    <input type="number" name="max_concurrent_ips" min="1" placeholder="boş = yok sayılır">
+                </label>
                 <button type="submit" class="btn btn-primary full-span">Kaydet</button>
             </form>
         </div>

@@ -70,19 +70,32 @@ function extractJson(text) {
   try { return JSON.parse(clean.slice(start, end + 1)); } catch (_) { return null; }
 }
 
+function firstNum(...vals) {
+  for (const v of vals) {
+    if (v != null) return Number(v) || 0;
+  }
+  return 0;
+}
+
+// Tolerant of both snake_case and camelCase key styles (different trojan-go
+// builds marshal the proto differently) and of omitempty: zero-valued fields —
+// notably ip_current/ip_limit — are simply absent, which means 0, not an error.
 function normalizeStatus(entry) {
   const s = (entry && entry.status) || entry || {};
-  const total = s.traffic_total || {};
-  const speed = s.speed_current || {};
-  const limit = s.speed_limit || {};
+  const total = s.traffic_total || s.trafficTotal || {};
+  const speed = s.speed_current || s.speedCurrent || {};
+  const limit = s.speed_limit || s.speedLimit || {};
   return {
     hash: (s.user && s.user.hash) || null,
-    trafficUp: Number(total.upload_traffic || 0),
-    trafficDown: Number(total.download_traffic || 0),
-    speedUp: Number(speed.upload_speed || 0),
-    speedDown: Number(speed.download_speed || 0),
-    limitUp: Number(limit.upload_speed || 0),
-    limitDown: Number(limit.download_speed || 0),
+    trafficUp: firstNum(total.upload_traffic, total.uploadTraffic),
+    trafficDown: firstNum(total.download_traffic, total.downloadTraffic),
+    speedUp: firstNum(speed.upload_speed, speed.uploadSpeed),
+    speedDown: firstNum(speed.download_speed, speed.downloadSpeed),
+    limitUp: firstNum(limit.upload_speed, limit.uploadSpeed),
+    limitDown: firstNum(limit.download_speed, limit.downloadSpeed),
+    // Concurrent client IPs — only counted on-box while ip_limit > 0.
+    ipCurrent: firstNum(s.ip_current, s.ipCurrent),
+    ipLimit: firstNum(s.ip_limit, s.ipLimit),
   };
 }
 
@@ -126,6 +139,19 @@ class TrojanApiService {
     const down = kibToBytes(user.speed_download);
     const ip = Math.max(0, Number(user.ip_limit) || 0);
     return `-upload-speed-limit ${up} -download-speed-limit ${down} -ip-limit ${ip}`;
+  }
+
+  // Byte-precise variant for users whose limits we only know from the live API
+  // (imported users): no KiB round-trip, so a modify re-sends their speed
+  // limits exactly and only the ip_limit actually changes.
+  buildLimitArgsRaw({ upBps = 0, downBps = 0, ipLimit = 0 } = {}) {
+    const n = (v) => Math.max(0, Math.round(Number(v) || 0));
+    return `-upload-speed-limit ${n(upBps)} -download-speed-limit ${n(downBps)} -ip-limit ${n(ipLimit)}`;
+  }
+
+  async modifyUserRaw(conn, binary, addr, hash, raw) {
+    const args = `-api set -modify-profile -target-hash ${shq(hash)} ${this.buildLimitArgsRaw(raw)}`;
+    return this.apiCommand(conn, binary, addr, args);
   }
 
   async addUser(conn, binary, addr, user) {
@@ -177,6 +203,27 @@ class TrojanApiService {
       const live = await this.listUsers(conn, binary, addr);
       const liveByHash = new Map(live.map((u) => [u.hash, u]));
       const managedHashes = new Set();
+
+      // Measurement arming for users we can't push (imported): trojan-go only
+      // counts concurrent IPs while ip_limit > 0, so 0-limit users get the high
+      // sentinel via ONE modify that re-sends their live speed limits
+      // byte-for-byte. A positive live limit (admin-set on NPanel, or an earlier
+      // sentinel) already counts and is never overridden.
+      const armHashes = new Set((options.armHashes || []).filter(Boolean));
+      const armIpLimit = Math.max(0, Number(options.armIpLimit) || 0);
+      if (armHashes.size && armIpLimit > 0) {
+        for (const u of live) {
+          if (u.hash && armHashes.has(u.hash) && u.ipLimit === 0) {
+            await this.modifyUserRaw(conn, binary, addr, u.hash, {
+              upBps: u.limitUp,
+              downBps: u.limitDown,
+              ipLimit: armIpLimit,
+            }).catch(() => { /* arming is best-effort */ });
+          }
+        }
+      }
+
+      const desiredByHash = new Map(users.map((u) => [this.hash(u.password), u]));
 
       for (const user of users) {
         const hash = this.hash(user.password);
@@ -235,6 +282,7 @@ class TrojanApiService {
       try {
         const fresh = await this.listUsers(conn, binary, addr);
         const freshByHash = new Map(fresh.map((u) => [u.hash, u]));
+        const ipRepairs = [];
         for (const item of result.applied) {
           const present = freshByHash.has(item.hash);
           if ((item.action === 'created' || item.action === 'updated') && !present) {
@@ -246,6 +294,30 @@ class TrojanApiService {
           }
           const s = freshByHash.get(item.hash);
           if (s) item.stats = s;
+          // trojan-go's Add op applies -ip-limit unreliably (only alongside a
+          // speed limit); Modify applies it unconditionally. Repair once when
+          // the fresh listing disagrees with the desired limit.
+          const want = desiredByHash.get(item.hash);
+          if (s && want && want.enabled !== false
+              && (item.action === 'created' || item.action === 'updated')
+              && Number(s.ipLimit) !== Math.max(0, Number(want.ip_limit) || 0)) {
+            ipRepairs.push({ hash: item.hash, user: want, item });
+          }
+        }
+        if (ipRepairs.length) {
+          for (const repair of ipRepairs) {
+            await this.modifyUser(conn, binary, addr, repair.user, repair.hash).catch(() => {});
+          }
+          const check = await this.listUsers(conn, binary, addr);
+          const checkByHash = new Map(check.map((u) => [u.hash, u]));
+          for (const repair of ipRepairs) {
+            const s = checkByHash.get(repair.hash);
+            if (s) repair.item.stats = s;
+            if (!s || Number(s.ipLimit) !== Math.max(0, Number(repair.user.ip_limit) || 0)) {
+              // Informational only — the user itself is live, just uncounted.
+              repair.item.message = repair.item.message || 'ip_limit did not apply';
+            }
+          }
         }
       } catch (_) { /* keep pre-read stats */ }
 
@@ -285,3 +357,4 @@ class TrojanApiService {
 
 module.exports = new TrojanApiService();
 module.exports.sha224 = sha224;
+module.exports.normalizeStatus = normalizeStatus;

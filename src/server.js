@@ -59,10 +59,13 @@ const io = new Server(server);
 
 const PORT = process.env.PORT || 3210;
 
-// Same-origin admin panel needs no CORS; lock cross-origin to ADMIN_ORIGIN when set.
+// The admin panel is served same-origin and the mobile API is a native client
+// (not subject to CORS), so by default we do NOT reflect arbitrary browser
+// origins (`origin: false` = same-origin only). Set ADMIN_ORIGIN to allow
+// specific cross-origin admin hosts.
 const corsOptions = process.env.ADMIN_ORIGIN
   ? { origin: process.env.ADMIN_ORIGIN.split(',').map((o) => o.trim()) }
-  : {};
+  : { origin: false };
 app.use(cors(corsOptions));
 // Baseline hardening headers (admin UI + API alike).
 app.use((req, res, next) => {
@@ -77,6 +80,7 @@ app.use(express.static(path.join(__dirname, 'public')));
 const cron = require('node-cron');
 const apiRoutes = require('./routes/api');
 const monitorService = require('./services/monitorService');
+const loadMetricsService = require('./services/loadMetricsService');
 const terminalService = require('./services/terminalService');
 const connectionLogService = require('./services/connectionLogService');
 const { pruneRateLimitBuckets } = require('./services/mobileSecurityService');
@@ -97,13 +101,25 @@ terminalService(io);
 async function bootstrapDatabase() {
   await sequelize.authenticate();
   const pending = await migrator.pending();
-  if (pending.length) {
+  if (!pending.length) {
+    console.log('Database schema up to date');
+    return;
+  }
+  // Auto-migrating on every boot is unsafe once there are multiple instances
+  // (they race SequelizeMeta) or large tables (a rolling deploy takes a lock).
+  // In production run `npm run migrate` as an explicit deploy step and leave
+  // AUTO_MIGRATE unset; here we refuse to serve on a stale schema rather than
+  // silently applying migrations under load.
+  if (process.env.AUTO_MIGRATE === 'true') {
     console.log(`Running ${pending.length} pending migration(s): ${pending.map((m) => m.name).join(', ')}`);
     await migrator.up();
     console.log('Migrations applied');
-  } else {
-    console.log('Database schema up to date');
+    return;
   }
+  throw new Error(
+    `${pending.length} pending migration(s): ${pending.map((m) => m.name).join(', ')}. `
+    + 'Run "npm run migrate" before starting, or set AUTO_MIGRATE=true to migrate on boot (single-instance only).',
+  );
 }
 
 async function start() {
@@ -120,10 +136,11 @@ async function start() {
     connectionLogService.sweepStale().catch((err) => console.error('Connection log sweep failed:', err.message));
   });
 
-  // Purge expired nonces + prune in-memory rate-limit buckets hourly.
+  // Purge expired nonces + prune in-memory rate-limit / login buckets hourly.
   cron.schedule('15 * * * *', () => {
     connectionLogService.purgeExpiredNonces().catch((err) => console.error('Nonce purge failed:', err.message));
     pruneRateLimitBuckets();
+    apiRoutes.pruneLoginAttempts();
   });
 
   // Retention: trim audit + connection logs daily to their configured horizons.
@@ -156,11 +173,27 @@ async function start() {
     monitorService.runConfigTestPass().catch((err) => console.error('Config test pass failed:', err.message));
   });
 
+  // Real load metrics poll (self-rescheduling — the interval is a runtime
+  // setting and can be sub-minute, which node-cron can't express).
+  loadMetricsService.start();
+
   // Kick an initial health pass shortly after boot so the panel isn't blank.
   setTimeout(() => {
     monitorService.runHealthPass().catch((err) => console.error('Initial health pass failed:', err.message));
   }, 5000);
 }
+
+// Single-process safety net: an unhandled rejection/exception anywhere outside
+// the already-guarded cron/background paths must not silently take down the one
+// process serving every mobile user. Log loudly; keep serving. (uncaughtException
+// leaves the process in an undefined state, so we log and let the platform
+// supervisor — pm2/systemd — decide on restart rather than exit(1) mid-request.)
+process.on('unhandledRejection', (reason) => {
+  console.error('[unhandledRejection]', reason && reason.stack ? reason.stack : reason);
+});
+process.on('uncaughtException', (error) => {
+  console.error('[uncaughtException]', error && error.stack ? error.stack : error);
+});
 
 start().catch((error) => {
   console.error('Failed to start server:', error);

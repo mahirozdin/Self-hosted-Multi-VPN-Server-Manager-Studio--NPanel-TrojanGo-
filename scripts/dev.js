@@ -22,6 +22,9 @@ setDefault('ADMIN_SESSION_SECRET', 'dev-session-secret-change-me-please-32b');
 setDefault('DB_ENCRYPTION_KEY', '0'.repeat(64));
 setDefault('MOBILE_ATTESTATION_MODE', 'development');
 setDefault('PORT', '3210');
+// Dev is single-instance on SQLite — auto-apply migrations on boot for
+// convenience. Production leaves this unset and runs `npm run migrate`.
+setDefault('AUTO_MIGRATE', 'true');
 
 console.log('── DEV MODE (SQLite) ─────────────────────────────');
 console.log(`   DB:    sqlite @ ${process.env.SQLITE_STORAGE}`);

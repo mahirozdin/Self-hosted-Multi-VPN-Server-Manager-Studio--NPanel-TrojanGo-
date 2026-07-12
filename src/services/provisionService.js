@@ -221,9 +221,20 @@ async function runInstall(serverId, serverConfig, options = {}, io = null) {
 
     const users = await runStep(io, job, 'user_sync', async () => {
       const autoPublish = options.publish && options.publish.autoPublish === true;
-      // Create the users on the box via the trojan-go API, then wire the catalog.
-      const desiredUsers = await syncDefaultUsers(server, { remote: true });
+      const userDefaults = options.userDefaults || {};
+      // Country/group linking happens even when default users are skipped, so
+      // the server still lands under the right country in the panel + app.
       const { country, group } = await ensureCountryAndGroupForServer(server, options.country || {});
+      if (userDefaults.createDefaults === false) {
+        return { stdout: 'Varsayılan kullanıcı oluşturma atlandı (create_defaults kapalı); ülke/grup bağlandı.' };
+      }
+      // Create the users on the box via the trojan-go API, then wire the catalog.
+      // Counts come from the install form (0-10 each), else Settings defaults.
+      const desiredUsers = await syncDefaultUsers(server, {
+        remote: true,
+        freeCount: userDefaults.freeCount,
+        premiumCount: userDefaults.premiumCount,
+      });
       await ensureDefaultCatalog(server, desiredUsers, country.id, group.id, { activate: autoPublish });
       if (autoPublish) {
         await publishServerCatalog(server, { appId: options.publish.appId != null ? options.publish.appId : null, activate: true });

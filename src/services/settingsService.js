@@ -19,6 +19,13 @@ const DEFAULTS = {
   free_ip_limit: '0',         // 0 = unlimited devices
   config_test_enabled: 'true', // hourly real-tunnel test of published configs
   config_test_timeout: '30',   // per-config test timeout (seconds)
+  load_poll_seconds: '60',     // load metrics poll interval (clamped to >= 15)
+  default_server_bandwidth_mbps: '1000', // bw capacity when Server.max_throughput_mbps is null
+  load_alert_threshold: '90',  // smoothed load >= this for 3 consecutive polls -> incident + email
+  stats_ip_tracking: 'true',   // arm a sentinel ip_limit so trojan-go counts concurrent client IPs
+  stats_ip_limit_sentinel: '50000', // "unlimited" sentinel (trojan-go only counts while ip_limit > 0)
+  default_free_count: '2',     // provisioning: default free users per new server
+  default_premium_count: '1',  // provisioning: default premium users per new server
 };
 
 async function loadAll() {

@@ -17,7 +17,8 @@ class SSHService {
         port: serverConfig.port || 22,
         username: serverConfig.username || 'root',
         password: serverConfig.password,
-        readyTimeout: SSH_TIMEOUT,
+        // Callers on a tight budget (load poll) may pass a shorter timeout.
+        readyTimeout: serverConfig.readyTimeout || SSH_TIMEOUT,
       });
     });
   }

@@ -226,21 +226,7 @@ class MonitorService {
   async refreshTraffic(server) {
     const { ok, users, error } = await trojanApiService.fetchLiveUsers(server);
     if (!ok) return { ok: false, error };
-    const rows = await NpanelUser.findAll({ where: { server_id: server.id } });
-    const byHash = new Map(users.map((u) => [u.hash, u]));
-    for (const row of rows) {
-      const hash = row.remote_hash || trojanApiService.hash(row.password);
-      const stats = byHash.get(hash);
-      if (stats) {
-        await row.update({
-          traffic_up: stats.trafficUp,
-          traffic_down: stats.trafficDown,
-          speed_up_current: stats.speedUp,
-          speed_down_current: stats.speedDown,
-          live_synced_at: new Date(),
-        });
-      }
-    }
+    await npanelUserService.foldLiveStatsOntoRows(server.id, users);
     return { ok: true };
   }
 

@@ -15,10 +15,14 @@ const REFRESH_TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 const CHALLENGE_TTL_MS = 5 * 60 * 1000;
 const REQUEST_CLOCK_SKEW_MS = 2 * 60 * 1000;
 const RATE_LIMIT_WINDOW_MS = 60 * 1000;
-const RATE_LIMIT_MAX_REQUESTS = 90;
-// Per-IP cap across ALL device ids: without it a single IP could mint a fresh
-// ip+device bucket per request (rotating X-Device-Id) and flood /v1 unlimited.
-const RATE_LIMIT_IP_MAX_REQUESTS = 300;
+const RATE_LIMIT_MAX_REQUESTS = Number(process.env.RATE_LIMIT_DEVICE_MAX || 90);
+// Per-IP cap across ALL device ids. This is the anti-flood ceiling (a single IP
+// rotating X-Device-Id could otherwise mint a fresh bucket per request), NOT a
+// per-user limit — so it must stay well above what a carrier-grade NAT (many
+// real subscribers behind one egress IP) produces, or legitimate users get mass
+// 429s on launch day. Raised from 300 and made env-tunable; the per-device cap
+// above is the real per-user limit.
+const RATE_LIMIT_IP_MAX_REQUESTS = Number(process.env.RATE_LIMIT_IP_MAX || 3000);
 const rateLimitBuckets = new Map();
 
 function randomToken(size = 32) {
@@ -314,8 +318,8 @@ async function verifySignedRequest(req) {
 function mobileAuthMiddleware(req, res, next) {
   verifySignedRequest(req)
     .then(() => next())
-    .catch(async (error) => {
-      await audit(req, error.status || 500, error.message);
+    .catch((error) => {
+      void audit(req, error.status || 500, error.message);
       res.status(error.status || 500).json({ error: error.message });
     });
 }
@@ -328,19 +332,26 @@ function bumpBucket(key, now) {
   }
   bucket.count += 1;
   rateLimitBuckets.set(key, bucket);
-  return bucket.count;
+  return bucket; // caller reads .count and .resetAt (for Retry-After)
 }
 
 function mobileRateLimitMiddleware(req, res, next) {
   const ip = getClientIp(req);
   const now = Date.now();
-  const deviceCount = bumpBucket(
+  // The per-device bucket is the real per-user limit; the per-IP bucket is only
+  // the shared anti-flood ceiling (NAT-tolerant, see the constant's note).
+  const deviceBucket = bumpBucket(
     `${ip}:${req.headers['x-device-id'] || req.body?.deviceId || 'anonymous'}`,
     now,
   );
-  const ipCount = bumpBucket(`ip:${ip}`, now);
+  const ipBucket = bumpBucket(`ip:${ip}`, now);
 
-  if (deviceCount > RATE_LIMIT_MAX_REQUESTS || ipCount > RATE_LIMIT_IP_MAX_REQUESTS) {
+  const deviceOver = deviceBucket.count > RATE_LIMIT_MAX_REQUESTS;
+  const ipOver = ipBucket.count > RATE_LIMIT_IP_MAX_REQUESTS;
+  if (deviceOver || ipOver) {
+    // Tell well-behaved clients when to retry instead of a bare 429.
+    const bucket = deviceOver ? deviceBucket : ipBucket;
+    res.set('Retry-After', String(Math.max(1, Math.ceil((bucket.resetAt - now) / 1000))));
     return res.status(429).json({ error: 'Rate limit exceeded' });
   }
 

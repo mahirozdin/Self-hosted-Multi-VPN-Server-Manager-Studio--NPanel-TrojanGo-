@@ -179,6 +179,19 @@ function renderServers() {
     }).join('');
 }
 
+// Live load pill for a server card/list row: hidden until the load poll has
+// fresh data (< 5 min), colored by the same low/medium/high buckets as the app.
+function isLoadFresh(s) {
+    return s && s.load_pct != null && s.load_updated_at
+        && (Date.now() - new Date(s.load_updated_at).getTime()) < 5 * 60 * 1000;
+}
+function loadPill(s) {
+    if (!isLoadFresh(s)) return '';
+    const cls = s.load_pct > 70 ? 'pill-offline' : (s.load_pct > 40 ? 'pill-draft' : 'pill-online');
+    const detail = `bant/CPU/IP maks · ${s.live_ip_total || 0} IP · CPU %${s.cpu_util != null ? s.cpu_util : '—'} · ${formatDate(s.load_updated_at)}`;
+    return `<span class="pill ${cls}" title="Yük skoru (${escapeHtml(detail)})">yük %${s.load_pct}</span>`;
+}
+
 function serverCard(s) {
     const users = state.users.filter((u) => u.server_id === s.id);
     const configs = state.catalog.filter((c) => c.server_id === s.id).length;
@@ -209,6 +222,7 @@ function serverCard(s) {
                 <span><i class="ri-shield-check-line"></i> SSL ${escapeHtml(sslDays(s.ssl_expiry))}</span>
                 <span><i class="ri-group-line"></i> ${users.length} kullanıcı</span>
                 <span><i class="ri-global-line"></i> ${configs} config</span>
+                ${loadPill(s)}
             </div>
             ${job ? `<div class="steps">${(job.steps || []).sort((a, b) => a.sort_order - b.sort_order).map((st) => `<span class="step-dot ${escapeHtml(st.status)}" title="${escapeHtml(st.label)}"></span>`).join('')}</div><div class="hint">${escapeHtml(job.current_step || job.status)}</div>` : ''}
             ${expanded ? `
@@ -246,7 +260,7 @@ function userRow(s, u) {
     return `
         <div class="list-row">
             <div class="grow"><strong>${escapeHtml(u.name)}</strong>
-                <small class="traffic">↑<b>${up}</b> ↓<b>${down}</b>${live} · ${escapeHtml(limit)} · ip ${u.ip_limit ? u.ip_limit : '∞'}</small></div>
+                <small class="traffic">↑<b>${up}</b> ↓<b>${down}</b>${live} · ${escapeHtml(limit)} · ip ${u.ip_limit ? u.ip_limit : '∞'} · ${u.ip_current || 0} cihaz</small></div>
             <span class="pill plain pill-${escapeHtml(u.profile_type)}">${escapeHtml(u.profile_type)}</span>
             ${statusPill}
             <div class="user-actions">${actions}</div>
@@ -307,6 +321,13 @@ async function loadSettings() {
         f.auto_renew_ssl.checked = String(state.settings.auto_renew_ssl) === 'true';
         f.config_test_enabled.checked = String(state.settings.config_test_enabled) === 'true';
         f.config_test_timeout.value = state.settings.config_test_timeout || 30;
+        f.load_poll_seconds.value = state.settings.load_poll_seconds || 60;
+        f.default_server_bandwidth_mbps.value = state.settings.default_server_bandwidth_mbps || 1000;
+        f.load_alert_threshold.value = state.settings.load_alert_threshold || 90;
+        f.stats_ip_limit_sentinel.value = state.settings.stats_ip_limit_sentinel || 50000;
+        f.default_free_count.value = state.settings.default_free_count != null ? state.settings.default_free_count : 2;
+        f.default_premium_count.value = state.settings.default_premium_count != null ? state.settings.default_premium_count : 1;
+        f.stats_ip_tracking.checked = String(state.settings.stats_ip_tracking) === 'true';
     } catch (_) { /* silent */ }
 }
 
@@ -347,10 +368,13 @@ function renderVpn() {
                 const srv = state.servers.find((s) => s.id === i.server_id);
                 const entry = i.entry_ip || srv?.ip || '—';
                 const sni = i.sni || srv?.domain || '—';
+                const loadTag = isLoadFresh(srv) ? ` · <span class="lat-tag">yük %${srv.load_pct}</span>` : '';
+                const recTag = i.recommended ? '<span class="pill pill-online" title="Önerilen sunucu (grubunda en düşük yük)">★ önerilen</span>' : '';
                 return `
                 <div class="list-row">
-                    <div class="grow"><strong>${escapeHtml(i.display_name)}</strong><small>giriş ${escapeHtml(entry)} · SNI ${escapeHtml(sni)}${latencyText(i)}</small></div>
+                    <div class="grow"><strong>${escapeHtml(i.display_name)}</strong><small>giriş ${escapeHtml(entry)} · SNI ${escapeHtml(sni)}${latencyText(i)}${loadTag}</small></div>
                     <span class="pill plain pill-${escapeHtml(i.type)}">${escapeHtml(i.type)}</span>
+                    ${recTag}
                     ${testPill(i)}
                     <span class="pill pill-${escapeHtml(i.status)}">${escapeHtml(i.status)}</span>
                     <button class="icon-btn" data-action="test-config" data-id="${i.id}" title="Configi şimdi test et"><i class="ri-pulse-line"></i></button>
@@ -564,6 +588,13 @@ document.getElementById('settingsForm').addEventListener('submit', async (e) => 
         auto_renew_ssl: f.auto_renew_ssl.checked ? 'true' : 'false',
         config_test_enabled: f.config_test_enabled.checked ? 'true' : 'false',
         config_test_timeout: f.config_test_timeout.value,
+        load_poll_seconds: f.load_poll_seconds.value,
+        default_server_bandwidth_mbps: f.default_server_bandwidth_mbps.value,
+        load_alert_threshold: f.load_alert_threshold.value,
+        stats_ip_limit_sentinel: f.stats_ip_limit_sentinel.value,
+        default_free_count: f.default_free_count.value,
+        default_premium_count: f.default_premium_count.value,
+        stats_ip_tracking: f.stats_ip_tracking.checked ? 'true' : 'false',
     };
     try { await api('/settings', { method: 'PUT', body: JSON.stringify(body) }); alert('Ayarlar kaydedildi'); loadSettings(); }
     catch (err) { alert(err.message); }
@@ -731,9 +762,21 @@ function serverFormData(form) {
         delete d.country_name; delete d.country_code;
     }
     if (!d.app_id) delete d.app_id;
+    // Empty count fields fall back to the Settings defaults server-side.
+    if (!d.free_count) delete d.free_count;
+    if (!d.premium_count) delete d.premium_count;
     // auto_publish / create_defaults are present (value 'true') only when ticked.
     return d;
 }
+
+// Show the count inputs only while default-user creation is on.
+[['addServerForm', 'addServerCounts'], ['installServerForm', 'installServerCounts']].forEach(([formId, blockId]) => {
+    const box = document.querySelector(`#${formId} [name=create_defaults]`);
+    box?.addEventListener('change', () => {
+        const block = document.getElementById(blockId);
+        if (block) block.style.display = box.checked ? 'grid' : 'none';
+    });
+});
 
 /* ===== Country flag preview ===== */
 const countryCodeInput = document.getElementById('countryCodeInput');
@@ -760,7 +803,12 @@ document.getElementById('addServerForm').addEventListener('submit', async (e) =>
 });
 document.getElementById('installServerForm').addEventListener('submit', async (e) => {
     e.preventDefault();
-    try { await submitForm('/install', serverFormData(e.target), 'installServerModal'); } catch (err) { alert(err.message); }
+    const d = serverFormData(e.target);
+    // Installs created defaults before this flag existed, so the backend treats
+    // an ABSENT create_defaults as true — send an explicit 'false' when unticked
+    // (unchecked checkboxes are omitted from FormData).
+    d.create_defaults = e.target.create_defaults.checked ? 'true' : 'false';
+    try { await submitForm('/install', d, 'installServerModal'); } catch (err) { alert(err.message); }
 });
 document.getElementById('editServerForm').addEventListener('submit', async (e) => {
     e.preventDefault();
@@ -829,6 +877,8 @@ document.body.addEventListener('click', async (e) => {
             f.dataset.id = s.id; f.name.value = s.name; f.ip.value = s.ip; f.port.value = s.port || 22;
             f.vpn_port.value = s.vpn_port || 443; f.username.value = s.username || 'root'; f.password.value = '';
             f.domain.value = s.domain; f.trojan_config.value = s.trojan_config || '';
+            f.max_throughput_mbps.value = s.max_throughput_mbps != null ? s.max_throughput_mbps : '';
+            f.max_concurrent_ips.value = s.max_concurrent_ips != null ? s.max_concurrent_ips : '';
             openModal('editServerModal');
         }
         else if (action === 'refresh-server') { await api(`/servers/${id}/refresh`, { method: 'POST' }); await loadAll({ silent: true }); }

@@ -50,7 +50,15 @@ const {
 const {
     resolveAppMiddleware,
     generateAppCredentials,
+    invalidateAppCache,
 } = require('../services/tenantService');
+
+// Accepts empty (clears the gate) or dotted numeric semver like "2.2.2" / "2.2".
+// Rejects anything else so a typo can't hard-brick every client (force-update).
+function isValidSemverOrEmpty(v) {
+    if (v == null || v === '') return true;
+    return /^\d+(\.\d+){1,3}$/.test(String(v).trim());
+}
 const { serializeConfig } = require('../services/catalogSerializer');
 const { englishName } = require('../services/countryNames');
 const connectionLogService = require('../services/connectionLogService');
@@ -66,6 +74,17 @@ function sanitizeServer(server) {
 
 function sanitizeServers(servers) {
     return servers.map(sanitizeServer);
+}
+
+// Default-user count from a form/body value: null/'' means "use the Settings
+// default"; otherwise it must be an integer 0-10.
+function parseCount(value) {
+    if (value == null || value === '') return null;
+    const n = Number(value);
+    if (!Number.isInteger(n) || n < 0 || n > 10) {
+        throw Object.assign(new Error('free_count/premium_count 0-10 arası tamsayı olmalı'), { status: 400 });
+    }
+    return n;
 }
 
 const { publishServerCatalog } = require('../services/catalogPublishService');
@@ -125,6 +144,16 @@ function loginRateLimited(ip) {
     return bucket.count > LOGIN_RATE_MAX;
 }
 
+// Drop expired login buckets so an IP-spraying attacker can't grow the Map
+// unbounded. Wired into the hourly cron in server.js (mirrors
+// pruneRateLimitBuckets). Exposed on the router export below.
+function pruneLoginAttempts() {
+    const now = Date.now();
+    for (const [ip, bucket] of loginAttempts) {
+        if (bucket.resetAt < now) loginAttempts.delete(ip);
+    }
+}
+
 router.post('/login', (req, res) => {
     const ip = getClientIp(req);
     if (loginRateLimited(ip)) {
@@ -149,10 +178,10 @@ router.use('/v1', banService.banGuardMiddleware);
 router.post('/v1/auth/challenge', mobileRateLimitMiddleware, async (req, res) => {
     try {
         const challenge = await createChallenge({ ...req.body, app: req.app_tenant });
-        await audit(req, 200, 'challenge_issued');
+        void audit(req, 200, 'challenge_issued');
         res.json(challenge);
     } catch (error) {
-        await audit(req, error.status || 500, error.message);
+        void audit(req, error.status || 500, error.message);
         res.status(error.status || 500).json({ error: error.message });
     }
 });
@@ -160,10 +189,10 @@ router.post('/v1/auth/challenge', mobileRateLimitMiddleware, async (req, res) =>
 router.post('/v1/auth/token', mobileRateLimitMiddleware, async (req, res) => {
     try {
         const token = await exchangeToken({ ...req.body, app: req.app_tenant });
-        await audit(req, 200, 'token_issued');
+        void audit(req, 200, 'token_issued');
         res.json(token);
     } catch (error) {
-        await audit(req, error.status || 500, error.message);
+        void audit(req, error.status || 500, error.message);
         res.status(error.status || 500).json({ error: error.message });
     }
 });
@@ -171,10 +200,10 @@ router.post('/v1/auth/token', mobileRateLimitMiddleware, async (req, res) => {
 router.post('/v1/auth/refresh', mobileRateLimitMiddleware, async (req, res) => {
     try {
         const token = await refreshToken({ ...req.body, app: req.app_tenant });
-        await audit(req, 200, 'token_refreshed');
+        void audit(req, 200, 'token_refreshed');
         res.json(token);
     } catch (error) {
-        await audit(req, error.status || 500, error.message);
+        void audit(req, error.status || 500, error.message);
         res.status(error.status || 500).json({ error: error.message });
     }
 });
@@ -202,7 +231,7 @@ router.get('/v1/countries', mobileRateLimitMiddleware, mobileAuthMiddleware, asy
         where: { id: countryIds },
         order: [['sort_order', 'ASC'], ['name', 'ASC']],
     });
-    await audit(req, 200, 'countries');
+    void audit(req, 200, 'countries');
     res.json({
         countries: countries.map((c) => ({ name: englishName(c.code, c.name), code: c.code, flag: c.flag })),
     });
@@ -220,17 +249,21 @@ router.get('/v1/configs', mobileRateLimitMiddleware, mobileAuthMiddleware, async
         ],
         order: [['sort_order', 'ASC'], ['display_name', 'ASC']],
     });
-    await audit(req, 200, 'configs');
-    res.json({ configs: items.map(serializeConfig) });
+    void audit(req, 200, 'configs');
+    // Load data older than max(3 poll intervals, 5 min) is served as null so the
+    // app hides the indicator instead of showing a dead number.
+    const pollSeconds = Math.max(15, await settingsService.getInt('load_poll_seconds', 60));
+    const loadStaleMs = Math.max(3 * pollSeconds * 1000, 5 * 60 * 1000);
+    res.json({ configs: items.map((item) => serializeConfig(item, { loadStaleMs })) });
 });
 
 router.post('/v1/sessions/start', mobileRateLimitMiddleware, mobileAuthMiddleware, async (req, res) => {
     try {
         const log = await connectionLogService.startLog(req, req.body || {});
-        await audit(req, 201, 'session_start');
+        void audit(req, 201, 'session_start');
         res.status(201).json({ logId: log.log_token, startedAt: log.connect_at });
     } catch (error) {
-        await audit(req, error.status || 500, error.message);
+        void audit(req, error.status || 500, error.message);
         res.status(error.status || 500).json({ error: error.message });
     }
 });
@@ -238,10 +271,10 @@ router.post('/v1/sessions/start', mobileRateLimitMiddleware, mobileAuthMiddlewar
 router.post('/v1/sessions/stop', mobileRateLimitMiddleware, mobileAuthMiddleware, async (req, res) => {
     try {
         const log = await connectionLogService.stopLog(req, req.body || {});
-        await audit(req, 200, 'session_stop');
+        void audit(req, 200, 'session_stop');
         res.json({ ok: true, durationSeconds: log.duration_seconds });
     } catch (error) {
-        await audit(req, error.status || 500, error.message);
+        void audit(req, error.status || 500, error.message);
         res.status(error.status || 500).json({ error: error.message });
     }
 });
@@ -262,11 +295,13 @@ router.get('/servers', async (req, res) => {
 
 router.post('/servers', async (req, res) => {
     try {
-        const { name, ip, port, vpn_port, username, password, domain, trojan_config, country_id, country_name, country_code, auto_publish, app_id, create_defaults, import_existing } = req.body;
+        const { name, ip, port, vpn_port, username, password, domain, trojan_config, country_id, country_name, country_code, auto_publish, app_id, create_defaults, import_existing, free_count, premium_count } = req.body;
         const autoPublish = auto_publish === true || auto_publish === 'true';
         // Import existing users only when asked; otherwise auto-create defaults.
         const importExisting = import_existing === true || import_existing === 'true';
         const createDefaults = create_defaults === true || create_defaults === 'true';
+        const freeCount = parseCount(free_count);
+        const premiumCount = parseCount(premium_count);
         const server = await Server.create({
             name,
             ip,
@@ -288,8 +323,9 @@ router.post('/servers', async (req, res) => {
 
         if (createDefaults) {
             // Create managed Free/Premium rows fast (no SSH); the box push happens
-            // in the background pass below.
-            const users = await syncDefaultUsers(server, { remote: false });
+            // in the background pass below. Counts come from the form (0-10 each),
+            // falling back to the Settings defaults.
+            const users = await syncDefaultUsers(server, { remote: false, freeCount, premiumCount });
             await ensureDefaultCatalog(server, users, country.id, group.id, { activate: autoPublish });
             if (autoPublish) {
                 await publishServerCatalog(server, { appId: app_id ? Number(app_id) : null, activate: true });
@@ -300,7 +336,7 @@ router.post('/servers', async (req, res) => {
 
         res.status(201).json(sanitizeServer(server));
     } catch (error) {
-        res.status(500).json({ error: error.message });
+        res.status(error.status || 500).json({ error: error.message });
     }
 });
 
@@ -309,7 +345,7 @@ router.put('/servers/:id', async (req, res) => {
         const server = await Server.findByPk(req.params.id);
         if (!server) return res.status(404).json({ error: 'Server not found' });
 
-        const { name, ip, port, vpn_port, username, password, domain, trojan_config } = req.body;
+        const { name, ip, port, vpn_port, username, password, domain, trojan_config, max_throughput_mbps, max_concurrent_ips } = req.body;
         const updates = {
             name,
             ip,
@@ -320,6 +356,13 @@ router.put('/servers/:id', async (req, res) => {
             trojan_config,
         };
         if (password) updates.password = password;
+        // Capacity inputs for the load score ('' clears back to defaults).
+        if (max_throughput_mbps !== undefined) {
+            updates.max_throughput_mbps = max_throughput_mbps === '' || max_throughput_mbps == null ? null : Math.max(1, Number(max_throughput_mbps) || 0) || null;
+        }
+        if (max_concurrent_ips !== undefined) {
+            updates.max_concurrent_ips = max_concurrent_ips === '' || max_concurrent_ips == null ? null : Math.max(1, Number(max_concurrent_ips) || 0) || null;
+        }
 
         await server.update(updates);
         monitorService.updateServerStatus(server);
@@ -355,8 +398,14 @@ router.post('/servers/:id/refresh', async (req, res) => {
 
 router.post('/install', async (req, res) => {
     try {
-        const { name, ip, port, vpn_port, username, password, domain, adminUser, adminPass, country_id, country_name, country_code, auto_publish, app_id } = req.body;
+        const { name, ip, port, vpn_port, username, password, domain, adminUser, adminPass, country_id, country_name, country_code, auto_publish, app_id, create_defaults, free_count, premium_count } = req.body;
         const autoPublish = auto_publish === true || auto_publish === 'true';
+        // Backward compatible: installs always created defaults before this flag
+        // existed, so an ABSENT create_defaults still means true — the UI sends an
+        // explicit 'false' when unticked.
+        const createDefaults = create_defaults == null ? true : (create_defaults === true || create_defaults === 'true');
+        const freeCount = parseCount(free_count);
+        const premiumCount = parseCount(premium_count);
         const server = await Server.create({
             name,
             ip,
@@ -387,6 +436,7 @@ router.post('/install', async (req, res) => {
                     countryCode: country_code,
                 },
                 publish: { autoPublish, appId: app_id ? Number(app_id) : null },
+                userDefaults: { createDefaults, freeCount, premiumCount },
             },
             getIo(req),
         ).catch((err) => {
@@ -395,7 +445,7 @@ router.post('/install', async (req, res) => {
 
         res.json({ message: 'Installation started', serverId: server.id, jobId: job.id });
     } catch (error) {
-        res.status(500).json({ error: error.message });
+        res.status(error.status || 500).json({ error: error.message });
     }
 });
 
@@ -474,12 +524,16 @@ router.post('/servers/:id/users/sync-defaults', async (req, res) => {
         const server = await Server.findByPk(req.params.id);
         if (!server) return res.status(404).json({ error: 'Server not found' });
 
-        const users = await syncDefaultUsers(server, { remote: req.body?.remote !== false });
+        const users = await syncDefaultUsers(server, {
+            remote: req.body?.remote !== false,
+            freeCount: parseCount(req.body?.free_count),
+            premiumCount: parseCount(req.body?.premium_count),
+        });
         const { country, group } = await ensureCountryAndGroupForServer(server);
         await ensureDefaultCatalog(server, users, country.id, group.id);
         res.json({ users: users.map(serializeUser) });
     } catch (error) {
-        res.status(500).json({ error: error.message });
+        res.status(error.status || 500).json({ error: error.message });
     }
 });
 
@@ -807,6 +861,9 @@ router.get('/apps', async (req, res) => {
 
 router.post('/apps', async (req, res) => {
     try {
+        if (!isValidSemverOrEmpty(req.body.min_supported_version)) {
+            return res.status(400).json({ error: 'min_supported_version boş veya N.N.N biçiminde olmalı' });
+        }
         const { appKey, hmacSecret } = generateAppCredentials();
         const app = await App.create({
             name: req.body.name,
@@ -823,6 +880,7 @@ router.post('/apps', async (req, res) => {
             play_integrity_sa_ref: req.body.play_integrity_sa_ref || null,
             min_supported_version: req.body.min_supported_version || null,
         });
+        invalidateAppCache();
         // Return the signing secret in plaintext exactly once (never again).
         res.status(201).json({ ...sanitizeApp(app), app_key: appKey, hmac_secret: hmacSecret });
     } catch (error) {
@@ -833,11 +891,15 @@ router.post('/apps', async (req, res) => {
 router.put('/apps/:id', async (req, res) => {
     const app = await App.findByPk(req.params.id);
     if (!app) return res.status(404).json({ error: 'App not found' });
+    if ('min_supported_version' in req.body && !isValidSemverOrEmpty(req.body.min_supported_version)) {
+        return res.status(400).json({ error: 'min_supported_version boş veya N.N.N biçiminde olmalı' });
+    }
     const updates = {};
     for (const key of APP_EDITABLE_FIELDS) {
         if (key in req.body) updates[key] = req.body[key];
     }
     await app.update(updates);
+    invalidateAppCache();
     res.json(sanitizeApp(app));
 });
 
@@ -845,6 +907,7 @@ router.delete('/apps/:id', async (req, res) => {
     const app = await App.findByPk(req.params.id);
     if (!app) return res.status(404).json({ error: 'App not found' });
     await app.destroy();
+    invalidateAppCache();
     res.json({ message: 'App deleted' });
 });
 
@@ -853,6 +916,7 @@ router.post('/apps/:id/rotate-key', async (req, res) => {
     if (!app) return res.status(404).json({ error: 'App not found' });
     const { appKey, hmacSecret } = generateAppCredentials();
     await app.update({ app_key: appKey, hmac_secret: hmacSecret });
+    invalidateAppCache();
     res.json({ app_key: appKey, hmac_secret: hmacSecret });
 });
 
@@ -1058,3 +1122,4 @@ router.get('/overview', async (req, res) => {
 });
 
 module.exports = router;
+module.exports.pruneLoginAttempts = pruneLoginAttempts;

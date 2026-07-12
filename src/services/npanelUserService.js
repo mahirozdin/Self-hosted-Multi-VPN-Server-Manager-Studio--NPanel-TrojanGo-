@@ -1,6 +1,8 @@
 const crypto = require('crypto');
+const { Op } = require('sequelize');
 const { NpanelUser, VpnCatalogItem, Country, ServerGroup } = require('../models/Database');
 const trojanApiService = require('./trojanApiService');
+const settingsService = require('./settingsService');
 const { englishName } = require('./countryNames');
 
 // Per-profile server-side defaults. Free is speed/IP limited (matches the NPanel
@@ -33,14 +35,75 @@ const PROFILE_DEFAULTS = {
 // Kept for backward-compatible imports; free profile is the baseline.
 const DEFAULT_PROFILE = PROFILE_DEFAULTS.free;
 
-const DEFAULT_USERS = [
-  { name: 'Free1', profile_type: 'free' },
-  { name: 'Free2', profile_type: 'free' },
-  { name: 'Premium', profile_type: 'premium' },
-];
+// Build the default user set for provisioning. Naming preserves idempotency
+// with servers created before counts were configurable (findOrCreate matches by
+// name): free i -> `Free${i}`; premium 1 -> `Premium`, premium i>1 -> `Premium${i}`.
+function buildDefaultUserList(freeCount, premiumCount) {
+  const users = [];
+  for (let i = 1; i <= freeCount; i += 1) {
+    users.push({ name: `Free${i}`, profile_type: 'free' });
+  }
+  for (let i = 1; i <= premiumCount; i += 1) {
+    users.push({ name: i === 1 ? 'Premium' : `Premium${i}`, profile_type: 'premium' });
+  }
+  return users;
+}
+
+// Kept for backward-compatible imports — the legacy fixed set.
+const DEFAULT_USERS = buildDefaultUserList(2, 1);
+
+// Counts for default-user provisioning: explicit request values win (ints
+// 0-10), otherwise the panel Settings defaults. At least one user must result.
+async function resolveDefaultCounts({ freeCount, premiumCount } = {}) {
+  const clamp = (value, fallback) => {
+    const n = Number(value);
+    return Number.isInteger(n) && n >= 0 && n <= 10 ? n : fallback;
+  };
+  const free = clamp(freeCount, await settingsService.getInt('default_free_count', 2));
+  const premium = clamp(premiumCount, await settingsService.getInt('default_premium_count', 1));
+  if (free + premium < 1) {
+    throw new Error('En az 1 varsayılan kullanıcı gerekli (free + premium >= 1)');
+  }
+  return { free, premium };
+}
 
 function profileFor(type) {
   return PROFILE_DEFAULTS[type] || PROFILE_DEFAULTS.free;
+}
+
+// Like profileFor, but with the panel-editable limits from Settings applied
+// (free/premium speed, free ip_limit). Request fields still override at call
+// sites that accept explicit values.
+async function profileForFromSettings(type) {
+  const base = { ...profileFor(type) };
+  if (type === 'premium') {
+    const speed = await settingsService.getInt('premium_speed_kib', 0);
+    base.speed_upload = speed;
+    base.speed_download = speed;
+  } else {
+    const speed = await settingsService.getInt('free_speed_kib', 4096);
+    base.speed_upload = speed;
+    base.speed_download = speed;
+    base.ip_limit = await settingsService.getInt('free_ip_limit', 0);
+  }
+  return base;
+}
+
+// Effective on-box ip_limit for a pushed user: a real admin limit wins;
+// otherwise the measurement sentinel (trojan-go only counts concurrent IPs
+// while ip_limit > 0), or 0 when tracking is disabled. The sentinel is never
+// persisted on the row — NpanelUser.ip_limit stays the admin-intended value.
+function effectiveIpLimit(userIpLimit, { trackingEnabled = false, sentinel = 50000 } = {}) {
+  const n = Math.max(0, Number(userIpLimit) || 0);
+  if (n > 0) return n;
+  return trackingEnabled ? Math.max(1, Number(sentinel) || 50000) : 0;
+}
+
+async function ipTrackingConfig() {
+  return {
+    trackingEnabled: await settingsService.getBool('stats_ip_tracking'),
+    sentinel: await settingsService.getInt('stats_ip_limit_sentinel', 50000),
+  };
 }
 
 function generatePassword() {
@@ -102,20 +165,48 @@ async function applyLiveStats(user, applied) {
     patch.traffic_down = applied.stats.trafficDown;
     patch.speed_up_current = applied.stats.speedUp;
     patch.speed_down_current = applied.stats.speedDown;
+    patch.ip_current = applied.stats.ipCurrent || 0;
     patch.live_synced_at = new Date();
   }
   await user.update(patch);
 }
 
-// Ensure the three default users (Free1, Free2, Premium) exist with correct
-// per-type limits + generated configs, then (when remote) push them to the box's
-// trojan-go over one SSH connection and record live status/traffic.
+// Write one live trojan-go listing onto this server's rows (managed + imported,
+// matched by hash). Shared by the monitor's traffic refresh and the load poll so
+// there is exactly one live-counter write path.
+async function foldLiveStatsOntoRows(serverId, liveUsers) {
+  const rows = await NpanelUser.findAll({ where: { server_id: serverId } });
+  const byHash = new Map((liveUsers || []).map((u) => [u.hash, u]));
+  for (const row of rows) {
+    const stats = byHash.get(row.remote_hash || trojanApiService.hash(row.password));
+    if (!stats) continue;
+    await row.update({
+      traffic_up: stats.trafficUp,
+      traffic_down: stats.trafficDown,
+      speed_up_current: stats.speedUp,
+      speed_down_current: stats.speedDown,
+      ip_current: stats.ipCurrent || 0,
+      live_synced_at: new Date(),
+    });
+  }
+}
+
+// Ensure the default users (Free1..N, Premium, Premium2..M) exist with the
+// Settings-defined per-type limits + generated configs, then (when remote) push
+// them to the box's trojan-go over one SSH connection and record live
+// status/traffic. Counts come from options.freeCount/premiumCount, falling back
+// to the Settings defaults; reducing counts later never deletes existing users.
 async function syncDefaultUsers(server, options = {}) {
   const remote = options.remote !== false;
+  const counts = await resolveDefaultCounts(options);
+  const profiles = {
+    free: await profileForFromSettings('free'),
+    premium: await profileForFromSettings('premium'),
+  };
   const users = [];
 
-  for (const definition of DEFAULT_USERS) {
-    const profile = profileFor(definition.profile_type);
+  for (const definition of buildDefaultUserList(counts.free, counts.premium)) {
+    const profile = profiles[definition.profile_type] || profiles.free;
     const [user] = await NpanelUser.findOrCreate({
       where: { server_id: server.id, name: definition.name },
       defaults: {
@@ -149,11 +240,34 @@ async function syncDefaultUsers(server, options = {}) {
 // Reconcile a set of already-persisted NpanelUser rows to the server in one
 // connection and fold the live results back onto each row. Only 'managed' users
 // (ones we hold the password for) are pushed — 'imported' users have no
-// recoverable password and are never written to the box.
+// recoverable password and are never written, but they ARE armed with the
+// measurement ip_limit sentinel so trojan-go counts their concurrent IPs too.
+// This is the single place the effective on-box ip_limit is computed.
 async function pushUsersToServer(server, users, options = {}) {
+  const cfg = await ipTrackingConfig();
   const managed = users.filter((u) => u.source !== 'imported' && u.password);
-  if (!managed.length) return { ok: true, applied: [] };
-  const result = await trojanApiService.syncServerUsers(server, managed, options);
+  const armHashes = cfg.trackingEnabled
+    ? users.filter((u) => u.source === 'imported' && u.remote_hash && u.enabled !== false).map((u) => u.remote_hash)
+    : [];
+  if (!managed.length && !armHashes.length) return { ok: true, applied: [] };
+
+  // Throwaway desired-state objects: ip_limit carries the EFFECTIVE on-box value
+  // (sentinel when unlimited + tracking on); the row's ip_limit column keeps the
+  // admin-intended value and must never receive the sentinel.
+  const desired = managed.map((u) => ({
+    id: u.id,
+    name: u.name,
+    password: u.password,
+    enabled: u.enabled,
+    speed_upload: u.speed_upload,
+    speed_download: u.speed_download,
+    ip_limit: effectiveIpLimit(u.ip_limit, cfg),
+  }));
+  const result = await trojanApiService.syncServerUsers(server, desired, {
+    ...options,
+    armHashes,
+    armIpLimit: cfg.sentinel,
+  });
   const byHash = new Map((result.applied || []).map((a) => [a.hash, a]));
   for (const user of managed) {
     const applied = byHash.get(trojanApiService.hash(user.password));
@@ -184,6 +298,7 @@ async function importLiveUsers(server) {
     knownByHash.set(u.remote_hash || trojanApiService.hash(u.password), u);
   }
 
+  const cfg = await ipTrackingConfig();
   let imported = 0;
   for (const live of users) {
     const known = knownByHash.get(live.hash);
@@ -194,6 +309,7 @@ async function importLiveUsers(server) {
         traffic_down: live.trafficDown,
         speed_up_current: live.speedUp,
         speed_down_current: live.speedDown,
+        ip_current: live.ipCurrent || 0,
         live_synced_at: new Date(),
         remote_status: known.source === 'imported' ? 'synced' : known.remote_status,
       });
@@ -209,7 +325,9 @@ async function importLiveUsers(server) {
       remote_hash: live.hash,
       speed_upload: Math.round((live.limitUp || 0) / 1024),
       speed_download: Math.round((live.limitDown || 0) / 1024),
-      ip_limit: 0,
+      // Store the real on-box limit, but never the measurement sentinel.
+      ip_limit: live.ipLimit > 0 && live.ipLimit !== cfg.sentinel ? live.ipLimit : 0,
+      ip_current: live.ipCurrent || 0,
       traffic_up: live.trafficUp,
       traffic_down: live.trafficDown,
       speed_up_current: live.speedUp,
@@ -231,7 +349,7 @@ async function adoptConfig(server, { name, config, profile_type } = {}) {
   const parsed = parseTrojanUrl(config);
   if (!parsed || !parsed.password) throw new Error('Geçerli bir trojan:// config gerekli');
   const type = profile_type === 'premium' ? 'premium' : 'free';
-  const profile = profileFor(type);
+  const profile = await profileForFromSettings(type);
   const [user] = await NpanelUser.findOrCreate({
     where: { server_id: server.id, name: name || parsed.label || `adopt-${Date.now()}` },
     defaults: {
@@ -259,7 +377,7 @@ async function adoptConfig(server, { name, config, profile_type } = {}) {
 // Create one arbitrary user on a server (panel "Add user" action).
 async function createUser(server, input = {}) {
   const type = input.profile_type === 'premium' ? 'premium' : 'free';
-  const profile = { ...profileFor(type) };
+  const profile = { ...(await profileForFromSettings(type)) };
   for (const key of ['speed_upload', 'speed_download', 'traffic_limit_max', 'ip_limit', 'days_left', 'protocol']) {
     if (input[key] != null && input[key] !== '') profile[key] = Number(input[key]);
   }
@@ -344,11 +462,27 @@ async function syncUserConfigsIntoCatalog(user) {
   }
 }
 
+// Display names must be unique within a country so a second server's items
+// don't collide in the app (e.g. two "Argentina Premium") — clashes get a
+// " 2", " 3", … suffix. Items that already carry a display_name are never
+// renamed (users may have customized them).
+async function uniqueDisplayName(countryId, base, excludeItemId = null) {
+  let candidate = base;
+  for (let n = 2; ; n += 1) {
+    const where = { country_id: countryId, display_name: candidate };
+    if (excludeItemId) where.id = { [Op.ne]: excludeItemId };
+    const clash = await VpnCatalogItem.findOne({ where });
+    if (!clash) return candidate;
+    candidate = `${base} ${n}`;
+  }
+}
+
 async function ensureDefaultCatalog(server, users, countryId, groupId, options = {}) {
   const activate = options.activate === true;
   const results = [];
   for (const user of users) {
     const type = user.profile_type === 'premium' ? 'premium' : 'free';
+    const baseName = `${server.name} ${user.name}`;
     const [item] = await VpnCatalogItem.findOrCreate({
       where: {
         server_id: server.id,
@@ -361,7 +495,7 @@ async function ensureDefaultCatalog(server, users, countryId, groupId, options =
         server_id: server.id,
         npanel_user_id: user.id,
         type,
-        display_name: `${server.name} ${user.name}`,
+        display_name: await uniqueDisplayName(countryId, baseName),
         config: user.config_ws,
         status: activate ? 'active' : 'draft',
       },
@@ -370,7 +504,7 @@ async function ensureDefaultCatalog(server, users, countryId, groupId, options =
     await item.update({
       country_id: countryId,
       group_id: groupId,
-      display_name: item.display_name || `${server.name} ${user.name}`,
+      display_name: item.display_name || await uniqueDisplayName(countryId, baseName, item.id),
       config: user.config_ws,
       ...(activate ? { status: 'active' } : {}),
     });
@@ -451,11 +585,17 @@ module.exports = {
   DEFAULT_PROFILE,
   DEFAULT_USERS,
   profileFor,
+  profileForFromSettings,
+  buildDefaultUserList,
+  resolveDefaultCounts,
+  effectiveIpLimit,
+  ipTrackingConfig,
   generatePassword,
   buildTrojanConfig,
   parseTrojanUrl,
   serializeUser,
   applyLiveStats,
+  foldLiveStatsOntoRows,
   syncDefaultUsers,
   pushUsersToServer,
   importLiveUsers,
@@ -465,6 +605,7 @@ module.exports = {
   deleteUser,
   syncUserConfigsIntoCatalog,
   ensureDefaultCatalog,
+  uniqueDisplayName,
   ensureCountryAndGroupForServer,
   flagForCode,
 };

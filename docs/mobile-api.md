@@ -62,11 +62,18 @@ Returns only configs exposed to this tenant.
     "uri": "trojan://<pw>@aris1.tempmail.monster:443?security=tls&type=ws&path=%2Ffetch#FREE1",
     "host": "130.94.106.181",
     "port": 443, "sni": "aris1.tempmail.monster", "transport": "ws", "path": "/fetch"
-  }
+  },
+  "load": { "pct": 34, "level": "low", "at": "2026-07-12T09:30:00.000Z" },
+  "recommended": true
 } ] }
 ```
 - **iOS**: connect with `config = connection.uri`, `ip = connection.host` (entry IP, differs from sni).
 - **Android**: parse `connection.uri` directly.
+- `load` / `recommended` (added 2026-07, additive): real server congestion.
+  `load` is **null** when the panel's data is unknown/stale (clients must treat
+  it as optional and hide the indicator); `level ∈ low|medium|high` (≤40/≤70/>70).
+  `recommended` marks the panel's least-loaded active config per (country, type)
+  group (hysteresis-stabilized, never set while `load` is null).
 
 ### `GET /v1/countries`
 `{ "countries": [ { "name":"Argentina","code":"AR","flag":"https://flagcdn.com/w80/ar.png" } ] }`
